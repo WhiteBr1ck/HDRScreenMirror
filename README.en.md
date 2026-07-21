@@ -32,6 +32,8 @@ In short, it provides an approximation of display duplication while Windows HDR 
 8. Global hotkeys for start, stop, emergency stop, and recalling the control panel.
 9. Optional minimize to system tray behavior while mirroring continues in the background.
 10. An option to move normal application windows from output displays to the capture display before mirroring starts.
+11. Automatic capture pause while a UAC administrator prompt uses the Windows secure desktop, followed by automatic recovery.
+12. Single instance operation; launching the application again recalls the existing control panel instead of starting another instance.
 
 ## Requirements
 

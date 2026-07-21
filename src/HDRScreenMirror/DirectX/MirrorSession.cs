@@ -13,6 +13,7 @@ namespace HDRScreenMirror.DirectX;
 
 internal sealed class MirrorSession : IDisposable
 {
+    private const int ErrorAccessDenied = unchecked((int)0x80070005);
     private const int DxgiErrorAccessLost = unchecked((int)0x887A0026);
     private const int DxgiErrorWaitTimeout = unchecked((int)0x887A0027);
 
@@ -66,6 +67,7 @@ internal sealed class MirrorSession : IDisposable
     private uint _cursorHeight;
     private int _cursorHotSpotX;
     private int _cursorHotSpotY;
+    private bool _captureAccessPaused;
 
     public MirrorSession(
         DisplayTarget capture,
@@ -176,13 +178,13 @@ internal sealed class MirrorSession : IDisposable
         _device = device;
         _context = context;
 
-        CreateDuplication();
+        bool duplicationReady = TryCreateDuplication();
         CreatePresenters();
         CreatePipeline();
-        StatusChanged?.Invoke(Localization.T("D3DReady"));
+        StatusChanged?.Invoke(Localization.T(duplicationReady ? "D3DReady" : "SecureDesktopWaiting"));
     }
 
-    private void CreateDuplication()
+    private bool TryCreateDuplication()
     {
         _duplication?.Dispose();
         _duplication = null;
@@ -201,6 +203,11 @@ internal sealed class MirrorSession : IDisposable
             {
                 _duplication = output5.DuplicateOutput1(_device!, preferredFormats);
             }
+            catch (SharpGenException exception) when (exception.HResult == ErrorAccessDenied)
+            {
+                SetCaptureAccessPaused(true);
+                return false;
+            }
             catch (SharpGenException)
             {
                 _duplication = null;
@@ -210,8 +217,19 @@ internal sealed class MirrorSession : IDisposable
         if (_duplication is null)
         {
             using IDXGIOutput1 output1 = _captureOutput!.QueryInterface<IDXGIOutput1>();
-            _duplication = output1.DuplicateOutput(_device!);
+            try
+            {
+                _duplication = output1.DuplicateOutput(_device!);
+            }
+            catch (SharpGenException exception) when (exception.HResult == ErrorAccessDenied)
+            {
+                SetCaptureAccessPaused(true);
+                return false;
+            }
         }
+
+        SetCaptureAccessPaused(false);
+        return true;
     }
 
     private void CreatePresenters()
@@ -302,7 +320,7 @@ internal sealed class MirrorSession : IDisposable
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            bool rendered = AcquireAndRender();
+            bool rendered = AcquireAndRender(cancellationToken);
             if (rendered)
             {
                 frames++;
@@ -324,17 +342,20 @@ internal sealed class MirrorSession : IDisposable
                     : _cursorView is not null
                         ? Localization.T("CursorRendered")
                         : Localization.T("CursorWaiting");
-                StatusChanged?.Invoke(Localization.F(
-                    "RunningStatus",
-                    fps,
-                    _inputFormat,
-                    hdr,
-                    _frameWidth,
-                    _frameHeight,
-                    cursorState,
-                    frames));
+                if (_captureAccessPaused)
+                    StatusChanged?.Invoke(Localization.T("SecureDesktopWaiting"));
+                else
+                    StatusChanged?.Invoke(Localization.F(
+                        "RunningStatus",
+                        fps,
+                        _inputFormat,
+                        hdr,
+                        _frameWidth,
+                        _frameHeight,
+                        cursorState,
+                        frames));
                 TelemetryChanged?.Invoke(new MirrorTelemetry(
-                    Localization.T("Running"),
+                    Localization.T(_captureAccessPaused ? "SecureDesktopPaused" : "Running"),
                     fps,
                     _inputFormat.ToString(),
                     hdr,
@@ -348,16 +369,32 @@ internal sealed class MirrorSession : IDisposable
         }
     }
 
-    private bool AcquireAndRender()
+    private bool AcquireAndRender(CancellationToken cancellationToken)
     {
-        Result result = _duplication!.AcquireNextFrame(16, out OutduplFrameInfo frameInfo, out IDXGIResource? desktopResource);
+        if (_duplication is null)
+        {
+            if (!TryCreateDuplication())
+            {
+                cancellationToken.WaitHandle.WaitOne(TimeSpan.FromMilliseconds(250));
+                return false;
+            }
+        }
+
+        IDXGIOutputDuplication duplication = _duplication!;
+        Result result = duplication.AcquireNextFrame(
+            16,
+            out OutduplFrameInfo frameInfo,
+            out IDXGIResource? desktopResource);
         if (result.Code == DxgiErrorWaitTimeout)
             return false;
 
-        if (result.Code == DxgiErrorAccessLost)
+        if (result.Code == DxgiErrorAccessLost || result.Code == ErrorAccessDenied)
         {
-            Thread.Sleep(100);
-            CreateDuplication();
+            duplication.Dispose();
+            _duplication = null;
+            if (result.Code == ErrorAccessDenied)
+                SetCaptureAccessPaused(true);
+            cancellationToken.WaitHandle.WaitOne(TimeSpan.FromMilliseconds(100));
             return false;
         }
 
@@ -365,7 +402,7 @@ internal sealed class MirrorSession : IDisposable
         if (desktopResource is null)
         {
             UpdatePointer(frameInfo);
-            _duplication.ReleaseFrame();
+            duplication.ReleaseFrame();
             return false;
         }
 
@@ -382,11 +419,20 @@ internal sealed class MirrorSession : IDisposable
         }
         finally
         {
-            _duplication.ReleaseFrame();
+            duplication.ReleaseFrame();
         }
 
         DrawFrame();
         return true;
+    }
+
+    private void SetCaptureAccessPaused(bool paused)
+    {
+        if (_captureAccessPaused == paused)
+            return;
+
+        _captureAccessPaused = paused;
+        StatusChanged?.Invoke(Localization.T(paused ? "SecureDesktopWaiting" : "CaptureResumed"));
     }
 
     private void EnsureFrameResources(Texture2DDescription sourceDescription)

@@ -724,6 +724,20 @@ internal sealed class ControlForm : Form
         Activate();
     }
 
+    internal void RecallFromSecondInstance()
+    {
+        if (IsDisposed || Disposing || !IsHandleCreated)
+            return;
+
+        try
+        {
+            BeginInvoke(RecallControlWindow);
+        }
+        catch (InvalidOperationException)
+        {
+        }
+    }
+
     private static int IntersectionArea(Rectangle left, Rectangle right)
     {
         Rectangle intersection = Rectangle.Intersect(left, right);

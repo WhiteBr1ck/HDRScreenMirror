@@ -31,6 +31,13 @@ internal static class Program
         if (uiDiagnostics)
             NativeMethods.AttachToParentConsole();
 
+        using SingleInstanceCoordinator singleInstance = new();
+        if (!singleInstance.IsPrimary)
+        {
+            singleInstance.SignalPrimary();
+            return;
+        }
+
         AppSettings settings = AppSettings.Load();
         Localization.SetPreference(settings.Language);
         ApplicationConfiguration.Initialize();
@@ -43,7 +50,10 @@ internal static class Program
 
         try
         {
-            Application.Run(new ControlForm(settings));
+            using ControlForm controlForm = new(settings);
+            controlForm.Shown += (_, _) =>
+                singleInstance.StartListening(controlForm.RecallFromSecondInstance);
+            Application.Run(controlForm);
         }
         catch (Exception exception)
         {
