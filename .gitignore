@@ -1,0 +1,53 @@
+# Build and publish output
+[Bb]in/
+[Oo]bj/
+artifacts/
+publish/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.opendb
+*.VC.db
+
+# JetBrains and other editors
+.idea/
+.fleet/
+.vscode/
+.history/
+*.sln.iml
+
+# NuGet packages and generated packages
+packages/
+*.nupkg
+*.snupkg
+
+# Test and coverage output
+TestResults/
+coverage/
+coverage.*
+*.coverage
+*.coveragexml
+
+# Local logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.userprefs
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+secrets.json
+appsettings.*.local.json
+
+# Operating system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
