@@ -299,11 +299,10 @@ internal sealed class MirrorSession : IDisposable
         Stopwatch reportingClock = Stopwatch.StartNew();
         long frames = 0;
         long intervalFrames = 0;
-        long timeouts = 0;
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            bool rendered = AcquireAndRender(ref timeouts);
+            bool rendered = AcquireAndRender();
             if (rendered)
             {
                 frames++;
@@ -333,8 +332,7 @@ internal sealed class MirrorSession : IDisposable
                     _frameWidth,
                     _frameHeight,
                     cursorState,
-                    frames,
-                    timeouts));
+                    frames));
                 TelemetryChanged?.Invoke(new MirrorTelemetry(
                     Localization.T("Running"),
                     fps,
@@ -343,7 +341,6 @@ internal sealed class MirrorSession : IDisposable
                     _frameWidth,
                     _frameHeight,
                     frames,
-                    timeouts,
                     _cursorVisible));
                 reportingClock.Restart();
                 intervalFrames = 0;
@@ -351,14 +348,11 @@ internal sealed class MirrorSession : IDisposable
         }
     }
 
-    private bool AcquireAndRender(ref long timeouts)
+    private bool AcquireAndRender()
     {
         Result result = _duplication!.AcquireNextFrame(16, out OutduplFrameInfo frameInfo, out IDXGIResource? desktopResource);
         if (result.Code == DxgiErrorWaitTimeout)
-        {
-            timeouts++;
             return false;
-        }
 
         if (result.Code == DxgiErrorAccessLost)
         {

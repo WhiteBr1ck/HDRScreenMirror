@@ -8,5 +8,4 @@ internal sealed record MirrorTelemetry(
     uint Width,
     uint Height,
     long TotalFrames,
-    long Timeouts,
     bool CursorVisible);

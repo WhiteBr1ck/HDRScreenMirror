@@ -9,7 +9,7 @@ internal sealed class AboutForm : Form
 
     public AboutForm()
     {
-        string version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.3.0";
+        string version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.3.1";
 
         _windowIcon = BrandAssets.LoadApplicationIcon();
         _logoImage = BrandAssets.LoadLogoImage();

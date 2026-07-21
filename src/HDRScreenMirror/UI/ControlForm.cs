@@ -29,6 +29,7 @@ internal sealed class ControlForm : Form
     private readonly CheckBox _renderCursor = CreateOptionCheckBox("RenderCursor", true);
     private readonly CheckBox _mouseThrough = CreateOptionCheckBox("MouseThrough", false);
     private readonly CheckBox _enableHotKeys = CreateOptionCheckBox("EnableHotkeys", true);
+    private readonly CheckBox _moveOutputWindows = CreateOptionCheckBox("MoveOutputWindows", false);
     private readonly CheckBox _minimizeToTray;
     private readonly Button _refreshButton = CreateButton("RefreshDisplays", 176);
     private readonly Button _startButton = CreateButton("StartMirror", 164);
@@ -83,8 +84,8 @@ internal sealed class ControlForm : Form
     {
         Text = "HDRScreenMirror";
         Width = 1120;
-        Height = 720;
-        MinimumSize = new Size(980, 680);
+        Height = 768;
+        MinimumSize = new Size(980, 728);
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
         BackColor = Color.FromArgb(248, 249, 251);
@@ -138,14 +139,15 @@ internal sealed class ControlForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(20, 18, 20, 18),
             ColumnCount = 2,
-            RowCount = 9,
+            RowCount = 10,
             BackColor = Color.FromArgb(248, 249, 251)
         };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 200));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 108));
@@ -163,6 +165,8 @@ internal sealed class ControlForm : Form
         layout.Controls.Add(BuildPresentOptions(), 1, 3);
         layout.Controls.Add(CreateLabel("InteractionSafety"), 0, 4);
         layout.Controls.Add(BuildInteractionOptions(), 1, 4);
+        layout.Controls.Add(CreateLabel("WindowManagement"), 0, 5);
+        layout.Controls.Add(BuildWindowManagementOptions(), 1, 5);
 
         GroupBox shortcutGroup = new()
         {
@@ -173,14 +177,14 @@ internal sealed class ControlForm : Form
             BackColor = Color.White
         };
         shortcutGroup.Controls.Add(_shortcutLabel);
-        layout.Controls.Add(shortcutGroup, 0, 5);
+        layout.Controls.Add(shortcutGroup, 0, 6);
         layout.SetColumnSpan(shortcutGroup, 2);
 
-        layout.Controls.Add(_noteLabel, 0, 6);
+        layout.Controls.Add(_noteLabel, 0, 7);
         layout.SetColumnSpan(_noteLabel, 2);
 
         Control actionRow = BuildActionRow();
-        layout.Controls.Add(actionRow, 0, 7);
+        layout.Controls.Add(actionRow, 0, 8);
         layout.SetColumnSpan(actionRow, 2);
 
         GroupBox statusGroup = new()
@@ -192,7 +196,7 @@ internal sealed class ControlForm : Form
             BackColor = Color.White
         };
         statusGroup.Controls.Add(_statusLabel);
-        layout.Controls.Add(statusGroup, 0, 8);
+        layout.Controls.Add(statusGroup, 0, 9);
         layout.SetColumnSpan(statusGroup, 2);
         return layout;
     }
@@ -254,6 +258,13 @@ internal sealed class ControlForm : Form
         row.Controls.Add(_mouseThrough);
         row.Controls.Add(_enableHotKeys);
         row.Controls.Add(_minimizeToTray);
+        return row;
+    }
+
+    private Control BuildWindowManagementOptions()
+    {
+        FlowLayoutPanel row = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
+        row.Controls.Add(_moveOutputWindows);
         return row;
     }
 
@@ -507,6 +518,12 @@ internal sealed class ControlForm : Form
         try
         {
             PositionOnCaptureDisplay(capture);
+            if (_moveOutputWindows.Checked)
+            {
+                Rectangle captureWorkArea = FindScreenForDisplay(capture).WorkingArea;
+                WindowRelocator.MoveWindowsToCapture(targets, captureWorkArea);
+            }
+
             List<MirrorOutputBinding> bindings = [];
             foreach (DisplayTarget target in targets)
             {
@@ -634,6 +651,7 @@ internal sealed class ControlForm : Form
         _showStatusOverlay.Enabled = !running;
         _renderCursor.Enabled = !running;
         _mouseThrough.Enabled = !running;
+        _moveOutputWindows.Enabled = !running;
         _refreshButton.Enabled = !running;
         _startButton.Enabled = !running && _displays.Count > 1;
         _stopButton.Enabled = running;
@@ -681,15 +699,17 @@ internal sealed class ControlForm : Form
 
     private void PositionOnCaptureDisplay(DisplayTarget capture)
     {
-        Screen screen = Screen.AllScreens
-            .OrderByDescending(x => IntersectionArea(x.Bounds, capture.Bounds))
-            .First();
+        Screen screen = FindScreenForDisplay(capture);
         Rectangle workArea = screen.WorkingArea;
         WindowState = FormWindowState.Normal;
         Location = new Point(
             workArea.Left + Math.Max(16, (workArea.Width - Width) / 2),
             workArea.Top + Math.Max(16, (workArea.Height - Height) / 2));
     }
+
+    private static Screen FindScreenForDisplay(DisplayTarget display) => Screen.AllScreens
+        .OrderByDescending(x => IntersectionArea(x.Bounds, display.Bounds))
+        .First();
 
     private void RecallControlWindow()
     {
@@ -713,6 +733,7 @@ internal sealed class ControlForm : Form
     private void ShowAbout()
     {
         using AboutForm about = new();
+        about.TopMost = TopMost;
         about.ShowDialog(this);
     }
 

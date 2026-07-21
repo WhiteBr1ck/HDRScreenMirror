@@ -86,8 +86,7 @@ internal sealed class StatusOverlayForm : Form
             Localization.F(
                 "OverlayMetrics",
                 0d,
-                Localization.T("CursorOff"),
-                0),
+                Localization.T("CursorOff")),
             132,
             new Font("Consolas", 9.5f, FontStyle.Regular));
 
@@ -129,8 +128,7 @@ internal sealed class StatusOverlayForm : Form
         _metricsLabel.Text = Localization.F(
             "OverlayMetrics",
             telemetry.FramesPerSecond,
-            Localization.T(telemetry.CursorVisible ? "CursorOn" : "CursorOff"),
-            telemetry.Timeouts);
+            Localization.T(telemetry.CursorVisible ? "CursorOn" : "CursorOff"));
         _statusDot.Invalidate();
     }
 
@@ -144,8 +142,7 @@ internal sealed class StatusOverlayForm : Form
             _metricsLabel.Text = Localization.F(
                 "OverlayMetrics",
                 0d,
-                Localization.T("CursorOff"),
-                0);
+                Localization.T("CursorOff"));
         }
     }
 

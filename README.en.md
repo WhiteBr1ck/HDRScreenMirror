@@ -16,6 +16,10 @@ HDRScreenMirror captures the desktop from one display in real time and copies it
 
 In short, it provides an approximation of display duplication while Windows HDR remains enabled.
 
+## Interface
+
+![HDRScreenMirror main window](docs/images/main-window.png)
+
 ## Features
 
 1. Real time Windows HDR desktop capture and mirroring.
@@ -27,6 +31,7 @@ In short, it provides an approximation of display duplication while Windows HDR 
 7. Optional mouse click through for interacting with the desktop behind the mirror window.
 8. Global hotkeys for start, stop, emergency stop, and recalling the control panel.
 9. Optional minimize to system tray behavior while mirroring continues in the background.
+10. An option to move normal application windows from output displays to the capture display before mirroring starts.
 
 ## Requirements
 
@@ -73,6 +78,7 @@ For example, if three displays are connected to one GPU, HDRScreenMirror can cap
 | Click through mirror | Disabled | Lets mouse clicks reach the desktop behind the mirror window |
 | Enable global hotkeys | Enabled | Registers the start, stop, emergency stop, and recall shortcuts |
 | Minimize to tray on close | Disabled | Hides the control panel while keeping an active mirror session running |
+| Move output windows to capture display on start | Disabled | Prevents windows from becoming inaccessible behind the mirror; minimized, system, and elevated windows may not move |
 
 ## Global hotkeys
 
