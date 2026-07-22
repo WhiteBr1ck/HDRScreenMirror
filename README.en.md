@@ -87,7 +87,7 @@ For example, if three displays are connected to one GPU, HDRScreenMirror can cap
 | Mark highest and lowest luminance | Disabled | Marks the highest and lowest average luminance locations on the output image and shows their values |
 | Output CIE 1976 gamut diagram | Disabled | Shows the current frame `u′v′` heatmap, three reference gamut triangles, and mutually exclusive gamut percentages in the bottom left corner |
 | Click through mirror | Disabled | Lets mouse clicks reach the desktop behind the mirror window |
-| Enable global hotkeys | Enabled | Registers the start, stop, emergency stop, and recall shortcuts |
+| Enable global hotkeys | Enabled | Registers shortcuts for start or stop, false color, screenshots, the status panel, and control panel recall |
 | Minimize to tray on close | Disabled | Hides the control panel while keeping an active mirror session running |
 | Move output windows to capture display on start | Disabled | Prevents windows from becoming inaccessible behind the mirror; minimized, system, and elevated windows may not move |
 | Screenshot save mode | Save automatically | Can save directly or ask for a location on every capture |
@@ -116,7 +116,7 @@ Shows the percentage of current frame elements that fall within each gamut range
 | `Ctrl + F8` | Start or stop mirroring |
 | `Ctrl + F9` | Toggle luminance false color |
 | `Ctrl + F10` | Capture the mirror image on every output display |
-| `Ctrl + F11` | Emergency stop |
+| `Ctrl + F11` | Show or hide the output status panel |
 | `Ctrl + F12` | Recall the control panel to the capture display |
 
 ## Output screenshots
@@ -160,6 +160,11 @@ Press `Ctrl + F12`. If tray mode is enabled, you can also double click the tray 
 5. Rare legacy monochrome or XOR cursors may be displayed using approximate colors.
 
 ## Changelog
+
+### 1.4.1
+
+1. Removed the redundant emergency stop shortcut; `Ctrl + F8` is now the single shortcut for stopping mirroring.
+2. Changed `Ctrl + F11` to show or hide the output status panel, both before and during mirroring.
 
 ### 1.4.0
 

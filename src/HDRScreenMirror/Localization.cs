@@ -52,7 +52,7 @@ internal static class Localization
             ["ShortcutText"] = "Ctrl + F8    开始或停止镜像\r\n" +
                                "Ctrl + F9    开启或关闭亮度伪色图\r\n" +
                                "Ctrl + F10   截取输出画面\r\n" +
-                               "Ctrl + F11   紧急停止镜像\r\n" +
+                               "Ctrl + F11   显示或隐藏输出屏状态面板\r\n" +
                                "Ctrl + F12   召回主界面到捕获显示器",
             ["MainNote"] = "镜像时主界面会留在捕获屏并临时置顶。“输出到所有”会使用捕获显卡上的全部其他显示器。",
             ["PaperWhiteHelp"] = "nits。仅影响 SDR 回退、SDR 亮度分析与鼠标亮度；HDR 主画面不受影响。",
@@ -90,7 +90,7 @@ internal static class Localization
             ["HdrOff"] = "HDR 未开启",
             ["OverlayStarting"] = "正在启动",
             ["OverlayWaiting"] = "等待输入信号",
-            ["OverlayHotkeys"] = "Ctrl + F9 伪色   ·   F10 截图   ·   F11 停止   ·   F12 召回",
+            ["OverlayHotkeys"] = "Ctrl + F8 停止   ·   F9 伪色   ·   F10 截图   ·   F11 面板   ·   F12 召回",
             ["OverlayMetrics"] = "{0,4:F1} fps   鼠标 {1}",
             ["OverlayFrameLuminance"] = "画面  平均 {0:F1}  最大 {1:F1}  最小 {2:F1} nits",
             ["OverlayPointerLuminance"] = "鼠标指针区域亮度   {0:F3} nits",
@@ -172,7 +172,7 @@ internal static class Localization
             ["ShortcutText"] = "Ctrl + F8    Start or stop mirroring\r\n" +
                                "Ctrl + F9    Toggle luminance false color\r\n" +
                                "Ctrl + F10   Capture output image\r\n" +
-                               "Ctrl + F11   Emergency stop\r\n" +
+                               "Ctrl + F11   Show or hide the output status panel\r\n" +
                                "Ctrl + F12   Recall this window to the capture display",
             ["MainNote"] = "Mirroring keeps this window on the capture display. “All displays” uses every other display on the capture GPU.",
             ["PaperWhiteHelp"] = "nits. Affects SDR fallback, SDR luminance analysis, and cursor brightness; the HDR image is unchanged.",
@@ -210,7 +210,7 @@ internal static class Localization
             ["HdrOff"] = "HDR disabled",
             ["OverlayStarting"] = "Starting",
             ["OverlayWaiting"] = "Waiting for input",
-            ["OverlayHotkeys"] = "Ctrl + F9 False color   ·   F10 Capture   ·   F11 Stop   ·   F12 Recall",
+            ["OverlayHotkeys"] = "Ctrl + F8 Stop   ·   F9 False color   ·   F10 Capture   ·   F11 Panel   ·   F12 Recall",
             ["OverlayMetrics"] = "{0,4:F1} fps   CURSOR {1}",
             ["OverlayFrameLuminance"] = "AVG {0:F1}  MAX {1:F1}  MIN {2:F1} nits",
             ["OverlayPointerLuminance"] = "CURSOR AREA   {0:F3} nits",

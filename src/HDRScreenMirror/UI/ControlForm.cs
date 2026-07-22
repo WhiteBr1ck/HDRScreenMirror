@@ -10,7 +10,7 @@ internal sealed class ControlForm : Form
     private const decimal DefaultPaperWhiteNits = 203;
     private const int RecallWindowHotKeyId = 0x4848;
     private const int ToggleMirrorHotKeyId = 0x484D;
-    private const int EmergencyStopHotKeyId = 0x4851;
+    private const int ToggleStatusOverlayHotKeyId = 0x4851;
     private const int ToggleFalseColorHotKeyId = 0x4846;
     private const int ScreenshotHotKeyId = 0x4853;
     private const string AutomaticScreenshotMode = "automatic";
@@ -1215,10 +1215,9 @@ internal sealed class ControlForm : Form
         if (message.Msg == NativeMethods.WmHotKey)
         {
             int hotKeyId = message.WParam.ToInt32();
-            if (hotKeyId == EmergencyStopHotKeyId)
+            if (hotKeyId == ToggleStatusOverlayHotKeyId)
             {
-                if (_session is not null)
-                    StopMirror();
+                _showStatusOverlay.Checked = !_showStatusOverlay.Checked;
                 return;
             }
             if (hotKeyId == ToggleMirrorHotKeyId)
@@ -1263,7 +1262,7 @@ internal sealed class ControlForm : Form
         RegisterHotKeyOrRecord(ToggleMirrorHotKeyId, modifiers, NativeMethods.VirtualKeyF8, "Ctrl + F8", failedHotKeys);
         RegisterHotKeyOrRecord(ToggleFalseColorHotKeyId, modifiers, NativeMethods.VirtualKeyF9, "Ctrl + F9", failedHotKeys);
         RegisterHotKeyOrRecord(ScreenshotHotKeyId, modifiers, NativeMethods.VirtualKeyF10, "Ctrl + F10", failedHotKeys);
-        RegisterHotKeyOrRecord(EmergencyStopHotKeyId, modifiers, NativeMethods.VirtualKeyF11, "Ctrl + F11", failedHotKeys);
+        RegisterHotKeyOrRecord(ToggleStatusOverlayHotKeyId, modifiers, NativeMethods.VirtualKeyF11, "Ctrl + F11", failedHotKeys);
         RegisterHotKeyOrRecord(RecallWindowHotKeyId, modifiers, NativeMethods.VirtualKeyF12, "Ctrl + F12", failedHotKeys);
 
         if (failedHotKeys.Count > 0)
@@ -1290,7 +1289,7 @@ internal sealed class ControlForm : Form
             return;
 
         NativeMethods.UnregisterHotKey(Handle, ToggleMirrorHotKeyId);
-        NativeMethods.UnregisterHotKey(Handle, EmergencyStopHotKeyId);
+        NativeMethods.UnregisterHotKey(Handle, ToggleStatusOverlayHotKeyId);
         NativeMethods.UnregisterHotKey(Handle, RecallWindowHotKeyId);
         NativeMethods.UnregisterHotKey(Handle, ScreenshotHotKeyId);
         NativeMethods.UnregisterHotKey(Handle, ToggleFalseColorHotKeyId);
