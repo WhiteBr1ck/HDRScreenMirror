@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Drawing.Imaging;
 using HDRScreenMirror.DirectX;
 using HDRScreenMirror.Interop;
 
@@ -10,6 +11,10 @@ internal sealed class ControlForm : Form
     private const int RecallWindowHotKeyId = 0x4848;
     private const int ToggleMirrorHotKeyId = 0x484D;
     private const int EmergencyStopHotKeyId = 0x4851;
+    private const int ToggleFalseColorHotKeyId = 0x4846;
+    private const int ScreenshotHotKeyId = 0x4853;
+    private const string AutomaticScreenshotMode = "automatic";
+    private const string PromptScreenshotMode = "prompt";
 
     private readonly ComboBox _captureCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly ComboBox _presentCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
@@ -27,12 +32,29 @@ internal sealed class ControlForm : Form
     private readonly CheckBox _vsync = CreateOptionCheckBox("VSync", true);
     private readonly CheckBox _showStatusOverlay = CreateOptionCheckBox("StatusOverlay", true);
     private readonly CheckBox _renderCursor = CreateOptionCheckBox("RenderCursor", true);
+    private readonly CheckBox _showPointerLuminance = CreateOptionCheckBox("ShowPointerLuminance", true);
+    private readonly CheckBox _falseColor = CreateOptionCheckBox("FalseColor", false);
+    private readonly CheckBox _showLuminanceMarkers = CreateOptionCheckBox("LuminanceMarkers", false);
+    private readonly CheckBox _showCieAnalysis = CreateOptionCheckBox("CieAnalysis", false);
     private readonly CheckBox _mouseThrough = CreateOptionCheckBox("MouseThrough", false);
     private readonly CheckBox _enableHotKeys = CreateOptionCheckBox("EnableHotkeys", true);
     private readonly CheckBox _moveOutputWindows = CreateOptionCheckBox("MoveOutputWindows", false);
     private readonly CheckBox _minimizeToTray;
+    private readonly ComboBox _screenshotModeCombo = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList,
+        Width = 210,
+        Margin = new Padding(3, 7, 6, 3)
+    };
+    private readonly TextBox _screenshotDirectoryTextBox = new()
+    {
+        ReadOnly = true,
+        Dock = DockStyle.Fill,
+        Margin = new Padding(3, 8, 6, 5)
+    };
+    private readonly Button _chooseScreenshotDirectoryButton = CreateButton("ChooseFolder", 136);
     private readonly Button _refreshButton = CreateButton("RefreshDisplays", 176);
-    private readonly Button _startButton = CreateButton("StartMirror", 164);
+    private readonly Button _startButton = CreateButton("StartMirror", 196);
     private readonly Button _stopButton = CreateButton("Stop", 92);
     private readonly Button _aboutButton = CreateButton("About", 88);
     private readonly ComboBox _languageCombo = new()
@@ -53,6 +75,7 @@ internal sealed class ControlForm : Form
     {
         Dock = DockStyle.Fill,
         AutoSize = false,
+        Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
         ForeColor = Color.FromArgb(84, 91, 104),
         Padding = new Padding(2, 8, 2, 4)
     };
@@ -69,6 +92,7 @@ internal sealed class ControlForm : Form
     private MirrorSession? _session;
     private readonly List<MirrorForm> _mirrorWindows = [];
     private readonly List<StatusOverlayForm> _statusOverlays = [];
+    private readonly List<AnalysisOverlayForm> _analysisOverlays = [];
     private readonly AppSettings _settings;
     private readonly NotifyIcon _trayIcon;
     private readonly Icon _trayIconImage;
@@ -79,12 +103,14 @@ internal sealed class ControlForm : Form
     private bool _exitRequested;
     private bool _hasEnumeratedDisplays;
     private bool _updatingLanguageSelection;
+    private bool _updatingScreenshotSelection;
+    private bool _takingScreenshot;
 
     public ControlForm(AppSettings settings)
     {
         Text = "HDRScreenMirror";
         Width = 1120;
-        Height = 768;
+        Height = 984;
         MinimumSize = new Size(980, 728);
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -112,6 +138,7 @@ internal sealed class ControlForm : Form
 
         _stopButton.Enabled = false;
         InitializeLanguageSelector();
+        InitializeScreenshotSelector();
         Controls.Add(BuildLayout());
         ApplyLanguage();
 
@@ -121,8 +148,15 @@ internal sealed class ControlForm : Form
         _stopButton.Click += (_, _) => StopMirror();
         _aboutButton.Click += (_, _) => ShowAbout();
         _allOutputs.CheckedChanged += (_, _) => UpdatePresentSelectorState();
+        _showStatusOverlay.CheckedChanged += (_, _) => UpdateStatusOverlayVisibility();
+        _showPointerLuminance.CheckedChanged += (_, _) => UpdatePointerLuminanceVisibility();
+        _falseColor.CheckedChanged += (_, _) => UpdateFalseColorMode();
+        _showLuminanceMarkers.CheckedChanged += (_, _) => UpdateLuminanceMarkerVisibility();
+        _showCieAnalysis.CheckedChanged += (_, _) => UpdateCieAnalysisVisibility();
         _enableHotKeys.CheckedChanged += (_, _) => RegisterConfiguredHotKeys();
         _minimizeToTray.CheckedChanged += (_, _) => SaveCloseBehavior();
+        _screenshotModeCombo.SelectedIndexChanged += (_, _) => ChangeScreenshotMode();
+        _chooseScreenshotDirectoryButton.Click += (_, _) => ChooseScreenshotDirectory();
         _languageCombo.SelectedIndexChanged += (_, _) => ChangeLanguage();
         _trayShowItem.Click += (_, _) => RecallControlWindow();
         _trayToggleMirrorItem.Click += (_, _) => ToggleMirror();
@@ -139,10 +173,10 @@ internal sealed class ControlForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(20, 18, 20, 18),
             ColumnCount = 2,
-            RowCount = 10,
+            RowCount = 13,
             BackColor = Color.FromArgb(248, 249, 251)
         };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
@@ -150,7 +184,10 @@ internal sealed class ControlForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 108));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 176));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -163,10 +200,16 @@ internal sealed class ControlForm : Form
         layout.Controls.Add(BuildPaperWhiteRow(), 1, 2);
         layout.Controls.Add(CreateLabel("Present"), 0, 3);
         layout.Controls.Add(BuildPresentOptions(), 1, 3);
-        layout.Controls.Add(CreateLabel("InteractionSafety"), 0, 4);
-        layout.Controls.Add(BuildInteractionOptions(), 1, 4);
-        layout.Controls.Add(CreateLabel("WindowManagement"), 0, 5);
-        layout.Controls.Add(BuildWindowManagementOptions(), 1, 5);
+        layout.Controls.Add(CreateLabel("LuminanceAnalysis"), 0, 4);
+        layout.Controls.Add(BuildLuminanceOptions(), 1, 4);
+        layout.Controls.Add(CreateLabel("ColorAnalysis"), 0, 5);
+        layout.Controls.Add(BuildColorAnalysisOptions(), 1, 5);
+        layout.Controls.Add(CreateLabel("InteractionSafety"), 0, 6);
+        layout.Controls.Add(BuildInteractionOptions(), 1, 6);
+        layout.Controls.Add(CreateLabel("WindowManagement"), 0, 7);
+        layout.Controls.Add(BuildWindowManagementOptions(), 1, 7);
+        layout.Controls.Add(CreateLabel("ScreenshotSettings"), 0, 8);
+        layout.Controls.Add(BuildScreenshotSettings(), 1, 8);
 
         GroupBox shortcutGroup = new()
         {
@@ -177,14 +220,14 @@ internal sealed class ControlForm : Form
             BackColor = Color.White
         };
         shortcutGroup.Controls.Add(_shortcutLabel);
-        layout.Controls.Add(shortcutGroup, 0, 6);
+        layout.Controls.Add(shortcutGroup, 0, 9);
         layout.SetColumnSpan(shortcutGroup, 2);
 
-        layout.Controls.Add(_noteLabel, 0, 7);
+        layout.Controls.Add(_noteLabel, 0, 10);
         layout.SetColumnSpan(_noteLabel, 2);
 
         Control actionRow = BuildActionRow();
-        layout.Controls.Add(actionRow, 0, 8);
+        layout.Controls.Add(actionRow, 0, 11);
         layout.SetColumnSpan(actionRow, 2);
 
         GroupBox statusGroup = new()
@@ -196,7 +239,7 @@ internal sealed class ControlForm : Form
             BackColor = Color.White
         };
         statusGroup.Controls.Add(_statusLabel);
-        layout.Controls.Add(statusGroup, 0, 9);
+        layout.Controls.Add(statusGroup, 0, 12);
         layout.SetColumnSpan(statusGroup, 2);
         return layout;
     }
@@ -211,7 +254,7 @@ internal sealed class ControlForm : Form
             Padding = new Padding(0, 0, 8, 0)
         };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 280));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
         row.Controls.Add(_presentCombo, 0, 0);
         row.Controls.Add(_allOutputs, 1, 0);
         return row;
@@ -261,10 +304,44 @@ internal sealed class ControlForm : Form
         return row;
     }
 
+    private Control BuildLuminanceOptions()
+    {
+        FlowLayoutPanel row = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
+        row.Controls.Add(_showPointerLuminance);
+        row.Controls.Add(_falseColor);
+        row.Controls.Add(_showLuminanceMarkers);
+        return row;
+    }
+
+    private Control BuildColorAnalysisOptions()
+    {
+        FlowLayoutPanel row = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
+        row.Controls.Add(_showCieAnalysis);
+        return row;
+    }
+
     private Control BuildWindowManagementOptions()
     {
         FlowLayoutPanel row = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
         row.Controls.Add(_moveOutputWindows);
+        return row;
+    }
+
+    private Control BuildScreenshotSettings()
+    {
+        TableLayoutPanel row = new()
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 1,
+            Padding = new Padding(0, 0, 8, 0)
+        };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 148));
+        row.Controls.Add(_screenshotModeCombo, 0, 0);
+        row.Controls.Add(_screenshotDirectoryTextBox, 1, 0);
+        row.Controls.Add(_chooseScreenshotDirectoryButton, 2, 0);
         return row;
     }
 
@@ -349,6 +426,67 @@ internal sealed class ControlForm : Form
         _updatingLanguageSelection = false;
     }
 
+    private void InitializeScreenshotSelector()
+    {
+        _settings.ScreenshotSaveMode = NormalizeScreenshotMode(_settings.ScreenshotSaveMode);
+        RefreshScreenshotModeChoices();
+        UpdateScreenshotSettingsState();
+    }
+
+    private void RefreshScreenshotModeChoices()
+    {
+        string selectedMode = NormalizeScreenshotMode(_settings.ScreenshotSaveMode);
+        _updatingScreenshotSelection = true;
+        _screenshotModeCombo.Items.Clear();
+        _screenshotModeCombo.Items.AddRange(
+        [
+            new ScreenshotModeChoice(AutomaticScreenshotMode, Localization.T("ScreenshotAutomatic")),
+            new ScreenshotModeChoice(PromptScreenshotMode, Localization.T("ScreenshotPrompt"))
+        ]);
+        _screenshotModeCombo.SelectedItem = _screenshotModeCombo.Items
+            .Cast<ScreenshotModeChoice>()
+            .First(x => x.Code == selectedMode);
+        _updatingScreenshotSelection = false;
+    }
+
+    private void ChangeScreenshotMode()
+    {
+        if (_updatingScreenshotSelection ||
+            _screenshotModeCombo.SelectedItem is not ScreenshotModeChoice choice)
+        {
+            return;
+        }
+
+        _settings.ScreenshotSaveMode = choice.Code;
+        _settings.Save();
+        UpdateScreenshotSettingsState();
+    }
+
+    private void UpdateScreenshotSettingsState()
+    {
+        bool automatic = NormalizeScreenshotMode(_settings.ScreenshotSaveMode) == AutomaticScreenshotMode;
+        _screenshotDirectoryTextBox.Text = GetScreenshotDirectory();
+        _screenshotDirectoryTextBox.Enabled = automatic;
+        _chooseScreenshotDirectoryButton.Enabled = automatic;
+    }
+
+    private void ChooseScreenshotDirectory()
+    {
+        using FolderBrowserDialog dialog = new()
+        {
+            Description = Localization.T("ChooseFolder"),
+            UseDescriptionForTitle = true,
+            SelectedPath = GetScreenshotDirectory(),
+            ShowNewFolderButton = true
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        _settings.ScreenshotDirectory = dialog.SelectedPath;
+        _settings.Save();
+        UpdateScreenshotSettingsState();
+    }
+
     private void ChangeLanguage()
     {
         if (_updatingLanguageSelection || _languageCombo.SelectedItem is not LanguageChoice choice)
@@ -364,6 +502,8 @@ internal sealed class ControlForm : Form
     {
         SuspendLayout();
         ApplyLocalizedControlText(this);
+        RefreshScreenshotModeChoices();
+        UpdateScreenshotSettingsState();
         _shortcutLabel.Text = Localization.T("ShortcutText");
         _noteLabel.Text = Localization.T("MainNote");
         RefreshDisplayLabels();
@@ -381,6 +521,8 @@ internal sealed class ControlForm : Form
         _trayExitItem.Text = Localization.T("TrayExit");
         UpdateTrayState();
         foreach (StatusOverlayForm overlay in _statusOverlays)
+            overlay.ApplyLanguage();
+        foreach (AnalysisOverlayForm overlay in _analysisOverlays)
             overlay.ApplyLanguage();
         ResumeLayout(true);
     }
@@ -426,6 +568,16 @@ internal sealed class ControlForm : Form
         Localization.English => Localization.English,
         _ => Localization.Automatic
     };
+
+    private static string NormalizeScreenshotMode(string? mode) => mode switch
+    {
+        PromptScreenshotMode => PromptScreenshotMode,
+        _ => AutomaticScreenshotMode
+    };
+
+    private string GetScreenshotDirectory() => string.IsNullOrWhiteSpace(_settings.ScreenshotDirectory)
+        ? Path.Combine(AppContext.BaseDirectory, "Screenshots")
+        : _settings.ScreenshotDirectory;
 
     protected override void OnShown(EventArgs eventArgs)
     {
@@ -532,16 +684,27 @@ internal sealed class ControlForm : Form
                 _mirrorWindows.Add(mirrorWindow);
                 bindings.Add(new MirrorOutputBinding(target, mirrorWindow.Handle));
 
-                if (_showStatusOverlay.Checked)
-                {
-                    StatusOverlayForm overlay = new(
-                        target.Bounds,
-                        capture,
-                        target,
-                        _mouseThrough.Checked);
-                    overlay.Show(mirrorWindow);
-                    _statusOverlays.Add(overlay);
-                }
+                StatusOverlayForm overlay = new(
+                    target.Bounds,
+                    capture,
+                    target,
+                    _mouseThrough.Checked,
+                    _showPointerLuminance.Checked,
+                    _falseColor.Checked);
+                overlay.Show(mirrorWindow);
+                if (!_showStatusOverlay.Checked)
+                    overlay.Hide();
+                _statusOverlays.Add(overlay);
+
+                AnalysisOverlayForm analysisOverlay = new(
+                    target.Bounds,
+                    capture,
+                    _showCieAnalysis.Checked,
+                    _showLuminanceMarkers.Checked);
+                analysisOverlay.Show(mirrorWindow);
+                if (!analysisOverlay.HasVisibleContent)
+                    analysisOverlay.Hide();
+                _analysisOverlays.Add(analysisOverlay);
             }
 
             _session = new MirrorSession(
@@ -549,11 +712,16 @@ internal sealed class ControlForm : Form
                 bindings,
                 (float)_paperWhite.Value,
                 _vsync.Checked,
-                _renderCursor.Checked);
+                _renderCursor.Checked,
+                _falseColor.Checked,
+                true);
             _session.StatusChanged += OnSessionStatusChanged;
             _session.TelemetryChanged += OnSessionTelemetryChanged;
+            _session.LuminanceChanged += OnSessionLuminanceChanged;
+            _session.GamutChanged += OnSessionGamutChanged;
             _session.Failed += OnSessionFailed;
             _session.Stopped += OnSessionStopped;
+            _session.SetGamutAnalysis(_showCieAnalysis.Checked);
             _session.Start();
 
             SetRunningState(true);
@@ -615,6 +783,8 @@ internal sealed class ControlForm : Form
         {
             session.StatusChanged -= OnSessionStatusChanged;
             session.TelemetryChanged -= OnSessionTelemetryChanged;
+            session.LuminanceChanged -= OnSessionLuminanceChanged;
+            session.GamutChanged -= OnSessionGamutChanged;
             session.Failed -= OnSessionFailed;
             session.Stopped -= OnSessionStopped;
             session.Stop();
@@ -627,6 +797,13 @@ internal sealed class ControlForm : Form
             overlay.Dispose();
         }
         _statusOverlays.Clear();
+
+        foreach (AnalysisOverlayForm overlay in _analysisOverlays)
+        {
+            overlay.Close();
+            overlay.Dispose();
+        }
+        _analysisOverlays.Clear();
 
         foreach (MirrorForm mirrorWindow in _mirrorWindows)
         {
@@ -648,8 +825,12 @@ internal sealed class ControlForm : Form
         _paperWhite.Enabled = !running;
         _resetPaperWhiteButton.Enabled = !running;
         _vsync.Enabled = !running;
-        _showStatusOverlay.Enabled = !running;
+        _showStatusOverlay.Enabled = true;
         _renderCursor.Enabled = !running;
+        _showPointerLuminance.Enabled = true;
+        _falseColor.Enabled = true;
+        _showLuminanceMarkers.Enabled = true;
+        _showCieAnalysis.Enabled = true;
         _mouseThrough.Enabled = !running;
         _moveOutputWindows.Enabled = !running;
         _refreshButton.Enabled = !running;
@@ -663,12 +844,236 @@ internal sealed class ControlForm : Form
         _presentCombo.Enabled = _session is null && !_allOutputs.Checked;
     }
 
+    private void UpdateStatusOverlayVisibility()
+    {
+        foreach (StatusOverlayForm overlay in _statusOverlays)
+        {
+            if (_showStatusOverlay.Checked)
+                overlay.Show();
+            else
+                overlay.Hide();
+        }
+    }
+
+    private void UpdatePointerLuminanceVisibility()
+    {
+        foreach (StatusOverlayForm overlay in _statusOverlays)
+            overlay.SetShowPointerLuminance(_showPointerLuminance.Checked);
+    }
+
+    private void UpdateFalseColorMode()
+    {
+        _session?.SetFalseColor(_falseColor.Checked);
+        foreach (StatusOverlayForm overlay in _statusOverlays)
+            overlay.SetFalseColor(_falseColor.Checked);
+    }
+
+    private void UpdateLuminanceMarkerVisibility()
+    {
+        foreach (AnalysisOverlayForm overlay in _analysisOverlays)
+        {
+            overlay.SetShowMarkers(_showLuminanceMarkers.Checked);
+            UpdateAnalysisOverlayVisibility(overlay);
+        }
+    }
+
+    private void UpdateCieAnalysisVisibility()
+    {
+        _session?.SetGamutAnalysis(_showCieAnalysis.Checked);
+        foreach (AnalysisOverlayForm overlay in _analysisOverlays)
+        {
+            overlay.SetShowCie(_showCieAnalysis.Checked);
+            UpdateAnalysisOverlayVisibility(overlay);
+        }
+    }
+
+    private static void UpdateAnalysisOverlayVisibility(AnalysisOverlayForm overlay)
+    {
+        if (overlay.HasVisibleContent)
+            overlay.Show();
+        else
+            overlay.Hide();
+    }
+
+    private void TakeOutputScreenshots()
+    {
+        if (_takingScreenshot)
+            return;
+        if (_session is null || _mirrorWindows.Count == 0)
+        {
+            _statusLabel.Text = Localization.T("ScreenshotNeedsMirror");
+            return;
+        }
+
+        _takingScreenshot = true;
+        bool screenshotSaved = false;
+        try
+        {
+            string[]? paths = ResolveScreenshotPaths();
+            if (paths is null)
+                return;
+
+            foreach (AnalysisOverlayForm overlay in _analysisOverlays)
+                overlay.HideScreenshotNotification();
+
+            foreach (StatusOverlayForm overlay in _statusOverlays)
+            {
+                if (overlay.Visible)
+                {
+                    overlay.Invalidate();
+                    overlay.Update();
+                }
+                overlay.SetCaptureExclusion(false);
+            }
+            foreach (AnalysisOverlayForm overlay in _analysisOverlays)
+            {
+                if (overlay.Visible)
+                {
+                    overlay.Invalidate();
+                    overlay.Update();
+                }
+                overlay.SetCaptureExclusion(false);
+            }
+            foreach (MirrorForm mirrorWindow in _mirrorWindows)
+                mirrorWindow.SetCaptureExclusion(false);
+
+            NativeMethods.DwmFlush();
+
+            for (int i = 0; i < _mirrorWindows.Count; i++)
+            {
+                Rectangle bounds = _mirrorWindows[i].Bounds;
+                using Bitmap bitmap = new(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
+                using (Graphics graphics = Graphics.FromImage(bitmap))
+                {
+                    graphics.CopyFromScreen(
+                        bounds.Location,
+                        Point.Empty,
+                        bounds.Size,
+                        CopyPixelOperation.SourceCopy);
+                }
+                bitmap.Save(paths[i], ImageFormat.Png);
+            }
+
+            _statusLabel.Text = paths.Length == 1
+                ? Localization.F("ScreenshotSaved", paths[0])
+                : Localization.F("ScreenshotsSaved", paths.Length, Path.GetDirectoryName(paths[0]) ?? string.Empty);
+            screenshotSaved = true;
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                exception.ToString(),
+                Localization.T("ScreenshotFailed"),
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+        finally
+        {
+            foreach (MirrorForm mirrorWindow in _mirrorWindows)
+                mirrorWindow.SetCaptureExclusion(true);
+            foreach (StatusOverlayForm overlay in _statusOverlays)
+                overlay.SetCaptureExclusion(true);
+            foreach (AnalysisOverlayForm overlay in _analysisOverlays)
+                overlay.SetCaptureExclusion(true);
+            NativeMethods.DwmFlush();
+            _takingScreenshot = false;
+        }
+
+        if (screenshotSaved)
+        {
+            foreach (AnalysisOverlayForm overlay in _analysisOverlays)
+                overlay.ShowScreenshotNotification();
+        }
+    }
+
+    private string[]? ResolveScreenshotPaths()
+    {
+        DateTime now = DateTime.Now;
+        if (NormalizeScreenshotMode(_settings.ScreenshotSaveMode) == AutomaticScreenshotMode)
+        {
+            string directory = GetScreenshotDirectory();
+            Directory.CreateDirectory(directory);
+            return Enumerable.Range(0, _mirrorWindows.Count)
+                .Select(index => GetUniqueFilePath(Path.Combine(directory, CreateScreenshotFileName(index, now))))
+                .ToArray();
+        }
+
+        string initialDirectory = GetScreenshotDirectory();
+        if (!Directory.Exists(initialDirectory))
+            initialDirectory = AppContext.BaseDirectory;
+
+        using SaveFileDialog dialog = new()
+        {
+            AddExtension = true,
+            DefaultExt = "png",
+            Filter = "PNG image (*.png)|*.png",
+            InitialDirectory = initialDirectory,
+            FileName = $"HDRScreenMirror_{now:yyyyMMdd_HHmmss_fff}.png",
+            OverwritePrompt = true
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return null;
+
+        if (_mirrorWindows.Count == 1)
+            return [dialog.FileName];
+
+        string directoryName = Path.GetDirectoryName(dialog.FileName) ?? initialDirectory;
+        string baseName = Path.GetFileNameWithoutExtension(dialog.FileName);
+        return Enumerable.Range(0, _mirrorWindows.Count)
+            .Select(index => GetUniqueFilePath(Path.Combine(
+                directoryName,
+                $"{baseName}_{GetOutputDisplayToken(index)}.png")))
+            .ToArray();
+    }
+
+    private string CreateScreenshotFileName(int outputIndex, DateTime now) =>
+        $"HDRScreenMirror_{now:yyyyMMdd_HHmmss_fff}_{GetOutputDisplayToken(outputIndex)}.png";
+
+    private string GetOutputDisplayToken(int outputIndex)
+    {
+        Screen screen = Screen.FromRectangle(_mirrorWindows[outputIndex].Bounds);
+        string token = new(screen.DeviceName.Where(char.IsLetterOrDigit).ToArray());
+        return string.IsNullOrWhiteSpace(token) ? $"OUTPUT{outputIndex + 1}" : token;
+    }
+
+    private static string GetUniqueFilePath(string path)
+    {
+        if (!File.Exists(path))
+            return path;
+
+        string? directory = Path.GetDirectoryName(path);
+        string fileName = Path.GetFileNameWithoutExtension(path);
+        string extension = Path.GetExtension(path);
+        for (int suffix = 2; ; suffix++)
+        {
+            string candidate = Path.Combine(directory ?? string.Empty, $"{fileName} ({suffix}){extension}");
+            if (!File.Exists(candidate))
+                return candidate;
+        }
+    }
+
     private void OnSessionStatusChanged(string text) => PostToUi(() => _statusLabel.Text = text);
 
     private void OnSessionTelemetryChanged(MirrorTelemetry telemetry) => PostToUi(() =>
     {
         foreach (StatusOverlayForm overlay in _statusOverlays)
             overlay.UpdateTelemetry(telemetry);
+        foreach (AnalysisOverlayForm overlay in _analysisOverlays)
+            overlay.UpdateMirrorTelemetry(telemetry);
+    });
+
+    private void OnSessionLuminanceChanged(LuminanceTelemetry telemetry) => PostToUi(() =>
+    {
+        foreach (StatusOverlayForm overlay in _statusOverlays)
+            overlay.UpdateLuminance(telemetry);
+        foreach (AnalysisOverlayForm overlay in _analysisOverlays)
+            overlay.UpdateLuminance(telemetry);
+    });
+
+    private void OnSessionGamutChanged(GamutTelemetry telemetry) => PostToUi(() =>
+    {
+        foreach (AnalysisOverlayForm overlay in _analysisOverlays)
+            overlay.UpdateGamut(telemetry);
     });
 
     private void OnSessionFailed(Exception exception) => PostToUi(() =>
@@ -829,6 +1234,16 @@ internal sealed class ControlForm : Form
                 RecallControlWindow();
                 return;
             }
+            if (hotKeyId == ScreenshotHotKeyId)
+            {
+                TakeOutputScreenshots();
+                return;
+            }
+            if (hotKeyId == ToggleFalseColorHotKeyId)
+            {
+                _falseColor.Checked = !_falseColor.Checked;
+                return;
+            }
         }
 
         base.WndProc(ref message);
@@ -843,25 +1258,30 @@ internal sealed class ControlForm : Form
         if (!_enableHotKeys.Checked)
             return;
 
-        uint modifiers = NativeMethods.ModControl | NativeMethods.ModAlt | NativeMethods.ModShift;
-        bool toggleRegistered = NativeMethods.RegisterHotKey(
-            Handle,
-            ToggleMirrorHotKeyId,
-            modifiers,
-            NativeMethods.VirtualKeyM);
-        bool stopRegistered = NativeMethods.RegisterHotKey(
-            Handle,
-            EmergencyStopHotKeyId,
-            modifiers,
-            NativeMethods.VirtualKeyQ);
-        bool recallRegistered = NativeMethods.RegisterHotKey(
-            Handle,
-            RecallWindowHotKeyId,
-            modifiers,
-            NativeMethods.VirtualKeyH);
+        uint modifiers = NativeMethods.ModControl | NativeMethods.ModNoRepeat;
+        List<string> failedHotKeys = [];
+        RegisterHotKeyOrRecord(ToggleMirrorHotKeyId, modifiers, NativeMethods.VirtualKeyF8, "Ctrl + F8", failedHotKeys);
+        RegisterHotKeyOrRecord(ToggleFalseColorHotKeyId, modifiers, NativeMethods.VirtualKeyF9, "Ctrl + F9", failedHotKeys);
+        RegisterHotKeyOrRecord(ScreenshotHotKeyId, modifiers, NativeMethods.VirtualKeyF10, "Ctrl + F10", failedHotKeys);
+        RegisterHotKeyOrRecord(EmergencyStopHotKeyId, modifiers, NativeMethods.VirtualKeyF11, "Ctrl + F11", failedHotKeys);
+        RegisterHotKeyOrRecord(RecallWindowHotKeyId, modifiers, NativeMethods.VirtualKeyF12, "Ctrl + F12", failedHotKeys);
 
-        if (!toggleRegistered || !stopRegistered || !recallRegistered)
-            _statusLabel.Text = Localization.T("HotkeyFailed");
+        if (failedHotKeys.Count > 0)
+        {
+            string separator = Localization.Current == UiLanguage.Chinese ? "、" : ", ";
+            _statusLabel.Text = Localization.F("HotkeyFailed", string.Join(separator, failedHotKeys));
+        }
+    }
+
+    private void RegisterHotKeyOrRecord(
+        int id,
+        uint modifiers,
+        uint virtualKey,
+        string displayName,
+        ICollection<string> failedHotKeys)
+    {
+        if (!NativeMethods.RegisterHotKey(Handle, id, modifiers, virtualKey))
+            failedHotKeys.Add(displayName);
     }
 
     private void UnregisterConfiguredHotKeys()
@@ -872,9 +1292,16 @@ internal sealed class ControlForm : Form
         NativeMethods.UnregisterHotKey(Handle, ToggleMirrorHotKeyId);
         NativeMethods.UnregisterHotKey(Handle, EmergencyStopHotKeyId);
         NativeMethods.UnregisterHotKey(Handle, RecallWindowHotKeyId);
+        NativeMethods.UnregisterHotKey(Handle, ScreenshotHotKeyId);
+        NativeMethods.UnregisterHotKey(Handle, ToggleFalseColorHotKeyId);
     }
 
     private sealed record LanguageChoice(string Code, string DisplayName)
+    {
+        public override string ToString() => DisplayName;
+    }
+
+    private sealed record ScreenshotModeChoice(string Code, string DisplayName)
     {
         public override string ToString() => DisplayName;
     }

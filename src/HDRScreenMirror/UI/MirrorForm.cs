@@ -42,8 +42,17 @@ internal sealed class MirrorForm : Form
     protected override void OnShown(EventArgs eventArgs)
     {
         base.OnShown(eventArgs);
-        if (_excludeFromCapture)
-            NativeMethods.SetWindowDisplayAffinity(Handle, NativeMethods.WdaExcludeFromCapture);
+        SetCaptureExclusion(true);
+    }
+
+    internal void SetCaptureExclusion(bool excluded)
+    {
+        if (!_excludeFromCapture || !IsHandleCreated)
+            return;
+
+        NativeMethods.SetWindowDisplayAffinity(
+            Handle,
+            excluded ? NativeMethods.WdaExcludeFromCapture : NativeMethods.WdaNone);
     }
 
     protected override void OnPaintBackground(PaintEventArgs eventArgs)

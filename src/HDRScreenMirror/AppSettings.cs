@@ -8,6 +8,8 @@ internal sealed class AppSettings
 
     public bool MinimizeToTrayOnClose { get; set; }
     public string Language { get; set; } = Localization.Automatic;
+    public string ScreenshotSaveMode { get; set; } = "automatic";
+    public string ScreenshotDirectory { get; set; } = string.Empty;
 
     public static AppSettings Load()
     {

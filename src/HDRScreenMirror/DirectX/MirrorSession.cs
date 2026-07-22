@@ -13,9 +13,18 @@ namespace HDRScreenMirror.DirectX;
 
 internal sealed class MirrorSession : IDisposable
 {
+    private const int GamutHistogramWidth = 128;
+    private const int GamutHistogramHeight = 128;
+    private const int GamutHistogramCount = GamutHistogramWidth * GamutHistogramHeight;
+    private const int GamutCounterCount = 5;
+    private const int GamutSliceCount = 8;
+    private const int GamutSliceStride = GamutHistogramCount + GamutCounterCount;
+    private const int GamutElementCount = GamutSliceCount * GamutSliceStride;
     private const int ErrorAccessDenied = unchecked((int)0x80070005);
     private const int DxgiErrorAccessLost = unchecked((int)0x887A0026);
     private const int DxgiErrorWaitTimeout = unchecked((int)0x887A0027);
+    private static readonly TimeSpan PointerAnalysisInterval = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan FrameAnalysisInterval = TimeSpan.FromMilliseconds(250);
 
     private static readonly FeatureLevel[] FeatureLevels =
     [
@@ -30,6 +39,9 @@ internal sealed class MirrorSession : IDisposable
     private readonly float _paperWhiteNits;
     private readonly bool _vsync;
     private readonly bool _renderCursor;
+    private int _falseColorEnabled;
+    private int _gamutAnalysisEnabled;
+    private readonly bool _analyzeLuminance;
     private readonly CancellationTokenSource _cancellation = new();
     private readonly TaskCompletionSource _initialized = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -49,6 +61,10 @@ internal sealed class MirrorSession : IDisposable
     private ID3D11PixelShader? _pixelShader;
     private ID3D11VertexShader? _cursorVertexShader;
     private ID3D11PixelShader? _cursorPixelShader;
+    private ID3D11ComputeShader? _luminanceComputeShader;
+    private ID3D11ComputeShader? _pointerProbeComputeShader;
+    private ID3D11ComputeShader? _gamutClearComputeShader;
+    private ID3D11ComputeShader? _gamutAnalysisComputeShader;
     private ID3D11SamplerState? _sampler;
     private ID3D11BlendState? _opaqueBlendState;
     private ID3D11BlendState? _cursorBlendState;
@@ -56,9 +72,28 @@ internal sealed class MirrorSession : IDisposable
     private ID3D11Buffer? _cursorConstantBuffer;
     private ID3D11Texture2D? _cursorTexture;
     private ID3D11ShaderResourceView? _cursorView;
+    private ID3D11Buffer? _frameStatsBuffer;
+    private ID3D11UnorderedAccessView? _frameStatsView;
+    private ID3D11Buffer? _frameStatsReadback;
+    private ID3D11Buffer? _pointerStatsBuffer;
+    private ID3D11UnorderedAccessView? _pointerStatsView;
+    private ID3D11Buffer? _pointerStatsReadback;
+    private ID3D11Buffer? _gamutBuffer;
+    private ID3D11UnorderedAccessView? _gamutView;
+    private ID3D11Buffer? _gamutReadback;
     private Format _inputFormat = Format.Unknown;
     private uint _frameWidth;
     private uint _frameHeight;
+    private uint _inputMode;
+    private int _frameStatsCount;
+    private bool _hasFrameLuminance;
+    private double _lastFrameAverageNits;
+    private double _lastFrameMaximumNits;
+    private double _lastFrameMinimumNits;
+    private uint _lastFrameMaximumX;
+    private uint _lastFrameMaximumY;
+    private uint _lastFrameMinimumX;
+    private uint _lastFrameMinimumY;
     private int _rotationCode;
     private bool _cursorVisible;
     private int _cursorX;
@@ -67,6 +102,9 @@ internal sealed class MirrorSession : IDisposable
     private uint _cursorHeight;
     private int _cursorHotSpotX;
     private int _cursorHotSpotY;
+    private int _probePointerX;
+    private int _probePointerY;
+    private bool _probePointerInCaptureArea;
     private bool _captureAccessPaused;
 
     public MirrorSession(
@@ -75,13 +113,17 @@ internal sealed class MirrorSession : IDisposable
         nint outputWindow,
         float paperWhiteNits,
         bool vsync,
-        bool renderCursor = true)
+        bool renderCursor = true,
+        bool falseColor = false,
+        bool analyzeLuminance = true)
         : this(
             capture,
             [new MirrorOutputBinding(present, outputWindow)],
             paperWhiteNits,
             vsync,
-            renderCursor)
+            renderCursor,
+            falseColor,
+            analyzeLuminance)
     {
     }
 
@@ -90,7 +132,9 @@ internal sealed class MirrorSession : IDisposable
         IReadOnlyList<MirrorOutputBinding> outputs,
         float paperWhiteNits,
         bool vsync,
-        bool renderCursor = true)
+        bool renderCursor = true,
+        bool falseColor = false,
+        bool analyzeLuminance = true)
     {
         if (outputs.Count == 0)
             throw new ArgumentException(Localization.T("NeedOutput"), nameof(outputs));
@@ -100,12 +144,22 @@ internal sealed class MirrorSession : IDisposable
         _paperWhiteNits = paperWhiteNits;
         _vsync = vsync;
         _renderCursor = renderCursor;
+        _falseColorEnabled = falseColor ? 1 : 0;
+        _analyzeLuminance = analyzeLuminance;
     }
 
     public event Action<string>? StatusChanged;
     public event Action<MirrorTelemetry>? TelemetryChanged;
+    public event Action<LuminanceTelemetry>? LuminanceChanged;
+    public event Action<GamutTelemetry>? GamutChanged;
     public event Action<Exception>? Failed;
     public event Action? Stopped;
+
+    public void SetFalseColor(bool enabled) =>
+        Volatile.Write(ref _falseColorEnabled, enabled ? 1 : 0);
+
+    public void SetGamutAnalysis(bool enabled) =>
+        Volatile.Write(ref _gamutAnalysisEnabled, enabled ? 1 : 0);
 
     public void Start()
     {
@@ -296,6 +350,17 @@ internal sealed class MirrorSession : IDisposable
         _pixelShader = _device.CreatePixelShader(pixelBytecode);
         _cursorVertexShader = _device.CreateVertexShader(cursorVertexBytecode);
         _cursorPixelShader = _device.CreatePixelShader(cursorPixelBytecode);
+        if (_analyzeLuminance)
+        {
+            byte[] luminanceBytecode = File.ReadAllBytes(Path.Combine(shaderDirectory, "LuminanceCS.cso"));
+            byte[] pointerProbeBytecode = File.ReadAllBytes(Path.Combine(shaderDirectory, "PointerProbeCS.cso"));
+            byte[] gamutClearBytecode = File.ReadAllBytes(Path.Combine(shaderDirectory, "GamutClearCS.cso"));
+            byte[] gamutAnalysisBytecode = File.ReadAllBytes(Path.Combine(shaderDirectory, "GamutAnalysisCS.cso"));
+            _luminanceComputeShader = _device.CreateComputeShader(luminanceBytecode);
+            _pointerProbeComputeShader = _device.CreateComputeShader(pointerProbeBytecode);
+            _gamutClearComputeShader = _device.CreateComputeShader(gamutClearBytecode);
+            _gamutAnalysisComputeShader = _device.CreateComputeShader(gamutAnalysisBytecode);
+        }
         _sampler = _device.CreateSamplerState(SamplerDescription.LinearClamp);
         _opaqueBlendState = _device.CreateBlendState(BlendDescription.Opaque);
         _cursorBlendState = _device.CreateBlendState(BlendDescription.NonPremultiplied);
@@ -315,6 +380,8 @@ internal sealed class MirrorSession : IDisposable
     private void RenderLoop(CancellationToken cancellationToken)
     {
         Stopwatch reportingClock = Stopwatch.StartNew();
+        Stopwatch luminanceClock = Stopwatch.StartNew();
+        Stopwatch frameLuminanceClock = Stopwatch.StartNew();
         long frames = 0;
         long intervalFrames = 0;
 
@@ -325,6 +392,24 @@ internal sealed class MirrorSession : IDisposable
             {
                 frames++;
                 intervalFrames++;
+
+                if (_analyzeLuminance && luminanceClock.Elapsed >= PointerAnalysisInterval)
+                {
+                    bool refreshFrameLuminance =
+                        !_hasFrameLuminance || frameLuminanceClock.Elapsed >= FrameAnalysisInterval;
+                    LuminanceTelemetry? luminance = AnalyzeLuminance(refreshFrameLuminance);
+                    if (luminance is not null)
+                        LuminanceChanged?.Invoke(luminance);
+                    if (refreshFrameLuminance && Volatile.Read(ref _gamutAnalysisEnabled) != 0)
+                    {
+                        GamutTelemetry? gamut = AnalyzeGamut();
+                        if (gamut is not null)
+                            GamutChanged?.Invoke(gamut);
+                    }
+                    if (refreshFrameLuminance)
+                        frameLuminanceClock.Restart();
+                    luminanceClock.Restart();
+                }
             }
 
             if (reportingClock.Elapsed >= TimeSpan.FromSeconds(1))
@@ -362,7 +447,7 @@ internal sealed class MirrorSession : IDisposable
                     _frameWidth,
                     _frameHeight,
                     frames,
-                    _cursorVisible));
+                    _renderCursor && _cursorVisible));
                 reportingClock.Restart();
                 intervalFrames = 0;
             }
@@ -446,6 +531,7 @@ internal sealed class MirrorSession : IDisposable
         _frameView?.Dispose();
         _frameTexture?.Dispose();
         _constantBuffer?.Dispose();
+        DisposeAnalysisResources();
 
         _inputFormat = sourceDescription.Format;
         _frameWidth = sourceDescription.Width;
@@ -467,7 +553,7 @@ internal sealed class MirrorSession : IDisposable
         _frameTexture = _device!.CreateTexture2D(frameDescription);
         _frameView = _device.CreateShaderResourceView(_frameTexture);
 
-        uint inputMode = _inputFormat switch
+        _inputMode = _inputFormat switch
         {
             Format.R16G16B16A16_Float => 0,
             Format.R10G10B10A2_UNorm => 2,
@@ -475,7 +561,7 @@ internal sealed class MirrorSession : IDisposable
             _ => throw new NotSupportedException(Localization.F("UnsupportedFormat", _inputFormat))
         };
 
-        MirrorConstants constants = new(_paperWhiteNits, inputMode, (uint)_rotationCode, 0);
+        MirrorConstants constants = CreateMirrorConstants();
         BufferDescription constantDescription = new()
         {
             ByteWidth = (uint)Marshal.SizeOf<MirrorConstants>(),
@@ -486,10 +572,13 @@ internal sealed class MirrorSession : IDisposable
             StructureByteStride = 0
         };
         _constantBuffer = _device.CreateBuffer(constants, constantDescription);
+        if (_analyzeLuminance)
+            CreateAnalysisResources();
     }
 
     private void DrawFrame()
     {
+        _context!.UpdateSubresource(CreateMirrorConstants(), _constantBuffer!);
         for (int i = 0; i < _presenters.Count; i++)
         {
             OutputPresenter presenter = _presenters[i];
@@ -533,12 +622,6 @@ internal sealed class MirrorSession : IDisposable
 
     private void UpdatePointer(OutduplFrameInfo frameInfo)
     {
-        if (!_renderCursor)
-        {
-            _cursorVisible = false;
-            return;
-        }
-
         if (frameInfo.LastMouseUpdateTime != 0)
         {
             _cursorVisible = frameInfo.PointerPosition.Visible;
@@ -546,7 +629,7 @@ internal sealed class MirrorSession : IDisposable
             _cursorY = frameInfo.PointerPosition.Position.Y;
         }
 
-        if (frameInfo.PointerShapeBufferSize == 0)
+        if (!_renderCursor || frameInfo.PointerShapeBufferSize == 0)
             return;
 
         byte[] shapeBuffer = new byte[frameInfo.PointerShapeBufferSize];
@@ -680,6 +763,343 @@ internal sealed class MirrorSession : IDisposable
         _context.PSSetShaderResource(1, null!);
     }
 
+    private MirrorConstants CreateMirrorConstants() => new(
+        _paperWhiteNits,
+        _inputMode,
+        (uint)_rotationCode,
+        Volatile.Read(ref _falseColorEnabled) != 0 ? 1u : 0u,
+        _frameWidth,
+        _frameHeight,
+        _probePointerX,
+        _probePointerY);
+
+    private void CreateAnalysisResources()
+    {
+        uint groupCountX = (_frameWidth + 15) / 16;
+        uint groupCountY = (_frameHeight + 15) / 16;
+        _frameStatsCount = checked((int)(groupCountX * groupCountY));
+        uint resultStride = (uint)Marshal.SizeOf<LuminanceGroupResult>();
+        uint frameBufferSize = checked((uint)_frameStatsCount * resultStride);
+
+        BufferDescription frameDescription = new(
+            frameBufferSize,
+            BindFlags.UnorderedAccess,
+            ResourceUsage.Default,
+            CpuAccessFlags.None,
+            ResourceOptionFlags.BufferStructured,
+            resultStride);
+        _frameStatsBuffer = _device!.CreateBuffer(frameDescription);
+        _frameStatsView = _device.CreateUnorderedAccessView(_frameStatsBuffer);
+
+        BufferDescription frameReadbackDescription = new(
+            frameBufferSize,
+            BindFlags.None,
+            ResourceUsage.Staging,
+            CpuAccessFlags.Read,
+            ResourceOptionFlags.BufferStructured,
+            resultStride);
+        _frameStatsReadback = _device.CreateBuffer(frameReadbackDescription);
+
+        BufferDescription pointerDescription = new(
+            resultStride,
+            BindFlags.UnorderedAccess,
+            ResourceUsage.Default,
+            CpuAccessFlags.None,
+            ResourceOptionFlags.BufferStructured,
+            resultStride);
+        _pointerStatsBuffer = _device.CreateBuffer(pointerDescription);
+        _pointerStatsView = _device.CreateUnorderedAccessView(_pointerStatsBuffer);
+
+        BufferDescription pointerReadbackDescription = new(
+            resultStride,
+            BindFlags.None,
+            ResourceUsage.Staging,
+            CpuAccessFlags.Read,
+            ResourceOptionFlags.BufferStructured,
+            resultStride);
+        _pointerStatsReadback = _device.CreateBuffer(pointerReadbackDescription);
+
+        uint gamutBufferSize = checked((uint)GamutElementCount * sizeof(uint));
+        BufferDescription gamutDescription = new(
+            gamutBufferSize,
+            BindFlags.UnorderedAccess,
+            ResourceUsage.Default,
+            CpuAccessFlags.None,
+            ResourceOptionFlags.BufferStructured,
+            sizeof(uint));
+        _gamutBuffer = _device.CreateBuffer(gamutDescription);
+        _gamutView = _device.CreateUnorderedAccessView(_gamutBuffer);
+
+        BufferDescription gamutReadbackDescription = new(
+            gamutBufferSize,
+            BindFlags.None,
+            ResourceUsage.Staging,
+            CpuAccessFlags.Read,
+            ResourceOptionFlags.BufferStructured,
+            sizeof(uint));
+        _gamutReadback = _device.CreateBuffer(gamutReadbackDescription);
+    }
+
+    private GamutTelemetry? AnalyzeGamut()
+    {
+        if (_frameView is null || _constantBuffer is null ||
+            _gamutBuffer is null || _gamutView is null || _gamutReadback is null ||
+            _gamutClearComputeShader is null || _gamutAnalysisComputeShader is null)
+        {
+            return null;
+        }
+
+        _context!.UpdateSubresource(CreateMirrorConstants(), _constantBuffer);
+        _context.CSSetConstantBuffer(0, _constantBuffer);
+        _context.CSSetUnorderedAccessView(0, _gamutView);
+        _context.CSSetShader(_gamutClearComputeShader);
+        _context.Dispatch((uint)((GamutElementCount + 255) / 256), 1, 1);
+        _context.CSSetUnorderedAccessView(0, null!);
+
+        _context.CSSetShaderResource(0, _frameView);
+        _context.CSSetUnorderedAccessView(0, _gamutView);
+        _context.CSSetShader(_gamutAnalysisComputeShader);
+        _context.Dispatch((_frameWidth + 31) / 32, (_frameHeight + 31) / 32, 1);
+        _context.CSSetUnorderedAccessView(0, null!);
+        _context.CSSetShaderResource(0, null!);
+        _context.CSSetShader(null!);
+        _context.CopyResource(_gamutReadback, _gamutBuffer);
+
+        uint[] histogram = new uint[GamutHistogramCount];
+        ulong[] counters = new ulong[GamutCounterCount];
+        MappedSubresource map = _context.Map(
+            _gamutReadback,
+            MapMode.Read,
+            Vortice.Direct3D11.MapFlags.None);
+        try
+        {
+            unsafe
+            {
+                uint* values = (uint*)map.DataPointer;
+                for (int slice = 0; slice < GamutSliceCount; slice++)
+                {
+                    int sliceOffset = slice * GamutSliceStride;
+                    for (int i = 0; i < GamutHistogramCount; i++)
+                        histogram[i] += values[sliceOffset + i];
+                    for (int i = 0; i < GamutCounterCount; i++)
+                        counters[i] += values[sliceOffset + GamutHistogramCount + i];
+                }
+            }
+        }
+        finally
+        {
+            _context.Unmap(_gamutReadback, 0);
+        }
+
+        ulong analyzedPixels = counters[4];
+        if (analyzedPixels == 0)
+            return new GamutTelemetry(
+                GamutHistogramWidth,
+                GamutHistogramHeight,
+                histogram,
+                0,
+                0,
+                0,
+                0,
+                0);
+
+        double scale = 100.0 / analyzedPixels;
+        return new GamutTelemetry(
+            GamutHistogramWidth,
+            GamutHistogramHeight,
+            histogram,
+            counters[0] * scale,
+            counters[1] * scale,
+            counters[2] * scale,
+            counters[3] * scale,
+            analyzedPixels);
+    }
+
+    private LuminanceTelemetry? AnalyzeLuminance(bool refreshFrameLuminance)
+    {
+        if (_frameView is null || _constantBuffer is null ||
+            _frameStatsBuffer is null || _frameStatsView is null || _frameStatsReadback is null ||
+            _pointerStatsBuffer is null || _pointerStatsView is null || _pointerStatsReadback is null)
+            return null;
+
+        UpdateProbePointerPosition();
+        _context!.UpdateSubresource(CreateMirrorConstants(), _constantBuffer);
+        _context.CSSetConstantBuffer(0, _constantBuffer);
+        _context.CSSetShaderResource(0, _frameView);
+
+        if (refreshFrameLuminance)
+        {
+            _context.CSSetShader(_luminanceComputeShader);
+            _context.CSSetUnorderedAccessView(0, _frameStatsView);
+            _context.Dispatch((_frameWidth + 15) / 16, (_frameHeight + 15) / 16, 1);
+            _context.CSSetUnorderedAccessView(0, null!);
+            _context.CopyResource(_frameStatsReadback, _frameStatsBuffer);
+        }
+
+        bool pointerInCaptureArea = IsPointerInCaptureArea();
+        if (pointerInCaptureArea)
+        {
+            _context.CSSetShader(_pointerProbeComputeShader);
+            _context.CSSetUnorderedAccessView(0, _pointerStatsView);
+            _context.Dispatch(1, 1, 1);
+            _context.CSSetUnorderedAccessView(0, null!);
+            _context.CopyResource(_pointerStatsReadback, _pointerStatsBuffer);
+        }
+
+        _context.CSSetShaderResource(0, null!);
+        _context.CSSetShader(null!);
+
+        if (refreshFrameLuminance)
+        {
+            double sum = 0;
+            double minimum = double.PositiveInfinity;
+            double maximum = 0;
+            ulong count = 0;
+            uint maximumX = 0;
+            uint maximumY = 0;
+            uint minimumX = 0;
+            uint minimumY = 0;
+            MappedSubresource frameMap = _context.Map(
+                _frameStatsReadback,
+                MapMode.Read,
+                Vortice.Direct3D11.MapFlags.None);
+            try
+            {
+                unsafe
+                {
+                    LuminanceGroupResult* results = (LuminanceGroupResult*)frameMap.DataPointer;
+                    for (int i = 0; i < _frameStatsCount; i++)
+                    {
+                        LuminanceGroupResult result = results[i];
+                        if (result.Count == 0)
+                            continue;
+
+                        sum += result.Sum;
+                        if (result.Minimum < minimum)
+                        {
+                            minimum = result.Minimum;
+                            minimumX = result.MinimumX;
+                            minimumY = result.MinimumY;
+                        }
+                        if (result.Maximum > maximum)
+                        {
+                            maximum = result.Maximum;
+                            maximumX = result.MaximumX;
+                            maximumY = result.MaximumY;
+                        }
+                        count += result.Count;
+                    }
+                }
+            }
+            finally
+            {
+                _context.Unmap(_frameStatsReadback, 0);
+            }
+
+            if (count == 0)
+                return null;
+
+            _lastFrameAverageNits = sum / count;
+            _lastFrameMaximumNits = maximum;
+            _lastFrameMinimumNits = double.IsPositiveInfinity(minimum) ? 0 : minimum;
+            _lastFrameMaximumX = maximumX;
+            _lastFrameMaximumY = maximumY;
+            _lastFrameMinimumX = minimumX;
+            _lastFrameMinimumY = minimumY;
+            _hasFrameLuminance = true;
+        }
+
+        double pointerRegionNits = 0;
+        if (pointerInCaptureArea)
+        {
+            MappedSubresource pointerMap = _context.Map(
+                _pointerStatsReadback,
+                MapMode.Read,
+                Vortice.Direct3D11.MapFlags.None);
+            try
+            {
+                unsafe
+                {
+                    LuminanceGroupResult result = *(LuminanceGroupResult*)pointerMap.DataPointer;
+                    if (result.Count > 0)
+                        pointerRegionNits = result.Sum / result.Count;
+                    else
+                        pointerInCaptureArea = false;
+                }
+            }
+            finally
+            {
+                _context.Unmap(_pointerStatsReadback, 0);
+            }
+        }
+
+        if (!_hasFrameLuminance)
+            return null;
+
+        return new LuminanceTelemetry(
+            _lastFrameAverageNits,
+            _lastFrameMaximumNits,
+            _lastFrameMinimumNits,
+            _lastFrameMaximumX,
+            _lastFrameMaximumY,
+            _lastFrameMinimumX,
+            _lastFrameMinimumY,
+            pointerInCaptureArea,
+            pointerRegionNits);
+    }
+
+    private void UpdateProbePointerPosition()
+    {
+        if (!NativeMethods.GetCursorPos(out NativeMethods.NativePoint point))
+            return;
+
+        int localX = point.X - _capture.Bounds.Left;
+        int localY = point.Y - _capture.Bounds.Top;
+        if (localX < 0 || localY < 0 ||
+            localX >= _capture.Bounds.Width || localY >= _capture.Bounds.Height)
+        {
+            _probePointerInCaptureArea = false;
+            return;
+        }
+
+        (_probePointerX, _probePointerY) = _rotationCode switch
+        {
+            1 => (localY, checked((int)_frameHeight - 1 - localX)),
+            2 => (checked((int)_frameWidth - 1 - localX), checked((int)_frameHeight - 1 - localY)),
+            3 => (checked((int)_frameWidth - 1 - localY), localX),
+            _ => (localX, localY)
+        };
+        _probePointerInCaptureArea =
+            _probePointerX >= 0 && _probePointerY >= 0 &&
+            _probePointerX < _frameWidth && _probePointerY < _frameHeight;
+    }
+
+    private bool IsPointerInCaptureArea() => _probePointerInCaptureArea;
+
+    private void DisposeAnalysisResources()
+    {
+        _frameStatsView?.Dispose();
+        _frameStatsBuffer?.Dispose();
+        _frameStatsReadback?.Dispose();
+        _pointerStatsView?.Dispose();
+        _pointerStatsBuffer?.Dispose();
+        _pointerStatsReadback?.Dispose();
+        _gamutView?.Dispose();
+        _gamutBuffer?.Dispose();
+        _gamutReadback?.Dispose();
+        _frameStatsView = null;
+        _frameStatsBuffer = null;
+        _frameStatsReadback = null;
+        _pointerStatsView = null;
+        _pointerStatsBuffer = null;
+        _pointerStatsReadback = null;
+        _gamutView = null;
+        _gamutBuffer = null;
+        _gamutReadback = null;
+        _frameStatsCount = 0;
+        _hasFrameLuminance = false;
+    }
+
     private static int MapRotation(ModeRotation rotation) => rotation switch
     {
         ModeRotation.Rotate90 => 1,
@@ -700,6 +1120,7 @@ internal sealed class MirrorSession : IDisposable
         }
 
         _constantBuffer?.Dispose();
+        DisposeAnalysisResources();
         _cursorConstantBuffer?.Dispose();
         _cursorView?.Dispose();
         _cursorTexture?.Dispose();
@@ -712,6 +1133,10 @@ internal sealed class MirrorSession : IDisposable
         _vertexShader?.Dispose();
         _cursorPixelShader?.Dispose();
         _cursorVertexShader?.Dispose();
+        _luminanceComputeShader?.Dispose();
+        _pointerProbeComputeShader?.Dispose();
+        _gamutClearComputeShader?.Dispose();
+        _gamutAnalysisComputeShader?.Dispose();
         foreach (OutputPresenter presenter in _presenters)
             presenter.Dispose();
         _presenters.Clear();
@@ -738,7 +1163,22 @@ internal sealed class MirrorSession : IDisposable
         float PaperWhiteNits,
         uint InputMode,
         uint Rotation,
-        float Padding);
+        uint FalseColorEnabled,
+        uint FrameWidth,
+        uint FrameHeight,
+        int PointerX,
+        int PointerY);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private readonly record struct LuminanceGroupResult(
+        float Sum,
+        float Minimum,
+        float Maximum,
+        uint Count,
+        uint MinimumX,
+        uint MinimumY,
+        uint MaximumX,
+        uint MaximumY);
 
     [StructLayout(LayoutKind.Sequential)]
     private readonly record struct CursorConstants(

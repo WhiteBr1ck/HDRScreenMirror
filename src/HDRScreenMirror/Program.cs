@@ -100,6 +100,7 @@ internal static class Program
 
             List<MirrorForm> mirrorWindows = [];
             List<StatusOverlayForm> statusOverlays = [];
+            List<AnalysisOverlayForm> analysisOverlays = [];
             List<MirrorOutputBinding> bindings = [];
             foreach (DisplayTarget target in targets)
             {
@@ -107,9 +108,12 @@ internal static class Program
                 mirrorWindow.Show();
                 mirrorWindows.Add(mirrorWindow);
                 bindings.Add(new MirrorOutputBinding(target, mirrorWindow.Handle));
-                StatusOverlayForm statusOverlay = new(target.Bounds, capture, target, false, false);
+                StatusOverlayForm statusOverlay = new(target.Bounds, capture, target, false, true, false, false);
                 statusOverlay.Show(mirrorWindow);
                 statusOverlays.Add(statusOverlay);
+                AnalysisOverlayForm analysisOverlay = new(target.Bounds, capture, true, true, false);
+                analysisOverlay.Show(mirrorWindow);
+                analysisOverlays.Add(analysisOverlay);
             }
             Application.DoEvents();
 
@@ -128,8 +132,35 @@ internal static class Program
                     if (overlay.IsHandleCreated && !overlay.IsDisposed)
                         overlay.BeginInvoke(() => overlay.UpdateTelemetry(telemetry));
                 }
+                foreach (AnalysisOverlayForm overlay in analysisOverlays)
+                {
+                    if (overlay.IsHandleCreated && !overlay.IsDisposed)
+                        overlay.BeginInvoke(() => overlay.UpdateMirrorTelemetry(telemetry));
+                }
+            };
+            session.LuminanceChanged += telemetry =>
+            {
+                foreach (StatusOverlayForm overlay in statusOverlays)
+                {
+                    if (overlay.IsHandleCreated && !overlay.IsDisposed)
+                        overlay.BeginInvoke(() => overlay.UpdateLuminance(telemetry));
+                }
+                foreach (AnalysisOverlayForm overlay in analysisOverlays)
+                {
+                    if (overlay.IsHandleCreated && !overlay.IsDisposed)
+                        overlay.BeginInvoke(() => overlay.UpdateLuminance(telemetry));
+                }
+            };
+            session.GamutChanged += telemetry =>
+            {
+                foreach (AnalysisOverlayForm overlay in analysisOverlays)
+                {
+                    if (overlay.IsHandleCreated && !overlay.IsDisposed)
+                        overlay.BeginInvoke(() => overlay.UpdateGamut(telemetry));
+                }
             };
             session.Failed += exception => runtimeFailure = exception;
+            session.SetGamutAnalysis(true);
             session.Start();
 
             Stopwatch clock = Stopwatch.StartNew();
@@ -140,6 +171,11 @@ internal static class Program
             }
 
             session.Stop();
+            foreach (AnalysisOverlayForm overlay in analysisOverlays)
+            {
+                overlay.Close();
+                overlay.Dispose();
+            }
             foreach (StatusOverlayForm overlay in statusOverlays)
             {
                 overlay.Close();

@@ -10,15 +10,23 @@
 
 ## Why HDRScreenMirror exists
 
-As is widely known, Windows cannot normally enable display duplication after HDR is turned on and can only use the displays in extended mode. This is inconvenient, for example, when you want to compare the HDR image quality of two monitors connected to one computer.
+Windows cannot normally enable display duplication after HDR is turned on and can only use the displays in extended mode. This is inconvenient, for example, when you want to compare the HDR image quality of two monitors connected to one computer.
 
 HDRScreenMirror captures the desktop from one display in real time and copies it to a target display through Direct3D 11 using an FP16 scRGB HDR output path.
 
 In short, it provides an approximation of display duplication while Windows HDR remains enabled.
 
+It now includes a complete suite of HDR analysis tools.
+
 ## Interface
 
+### Main window
+
 ![HDRScreenMirror main window](docs/images/main-window.png)
+
+### HDR analysis tools
+
+![HDRScreenMirror HDR analysis tools](docs/images/hdr-analysis.png)
 
 ## Features
 
@@ -27,13 +35,10 @@ In short, it provides an approximation of display duplication while Windows HDR 
 3. A single output display or every other display connected to the same GPU.
 4. Automatic aspect ratio preservation with black bars when required.
 5. Optional cursor rendering on output displays.
-6. An optional output status panel with live format, resolution, frame rate, and cursor information.
-7. Optional mouse click through for interacting with the desktop behind the mirror window.
-8. Global hotkeys for start, stop, emergency stop, and recalling the control panel.
-9. Optional minimize to system tray behavior while mirroring continues in the background.
-10. An option to move normal application windows from output displays to the capture display before mirroring starts.
-11. Automatic capture pause while a UAC administrator prompt uses the Windows secure desktop, followed by automatic recovery.
-12. Single instance operation; launching the application again recalls the existing control panel instead of starting another instance.
+6. An optional live status panel in the top left corner of each output display.
+7. Global hotkeys.
+8. HDR luminance analysis tools.
+9. HDR gamut analysis tools.
 
 ## Requirements
 
@@ -75,22 +80,52 @@ For example, if three displays are connected to one GPU, HDRScreenMirror can cap
 | --- | --- | --- |
 | SDR white level | 203 nits | Controls SDR fallback and cursor brightness in the HDR output without changing the FP16 HDR image |
 | VSync | Enabled | Reduces visible tearing on the output |
-| Output status panel | Enabled | Shows resolution, format, frame rate, and cursor state in the top left corner of the output |
+| Output status panel | Enabled | Shows resolution, format, frame rate, cursor state, average frame luminance, maximum luminance, and minimum luminance in the top left corner |
 | Render cursor on output | Enabled | Composites the capture display cursor into the mirror image |
+| Show cursor area luminance | Enabled | Shows the average luminance of the area under the cursor to three decimal places; reports when the cursor is outside the capture area |
+| Output luminance false color | Disabled | Switches every output display to the same luminance false color view and shows its scale in the status panel |
+| Mark highest and lowest luminance | Disabled | Marks the highest and lowest average luminance locations on the output image and shows their values |
+| Output CIE 1976 gamut diagram | Disabled | Shows the current frame `u′v′` heatmap, three reference gamut triangles, and mutually exclusive gamut percentages in the bottom left corner |
 | Click through mirror | Disabled | Lets mouse clicks reach the desktop behind the mirror window |
 | Enable global hotkeys | Enabled | Registers the start, stop, emergency stop, and recall shortcuts |
 | Minimize to tray on close | Disabled | Hides the control panel while keeping an active mirror session running |
 | Move output windows to capture display on start | Disabled | Prevents windows from becoming inaccessible behind the mirror; minimized, system, and elevated windows may not move |
+| Screenshot save mode | Save automatically | Can save directly or ask for a location on every capture |
+| Screenshot folder | `Screenshots` beside the application | Used by automatic saving and can be changed with “Choose folder” |
+
+### CIE 1976 gamut analysis
+
+Shows the percentage of current frame elements that fall within each gamut range.
+
+### Luminance false color scale
+
+| Luminance range | Continuous color transition |
+| --- | --- |
+| 0 to 100 nits | Black continuously rising to gray |
+| 100 to 203 nits | Cyan continuously transitioning to green |
+| 203 to 400 nits | Green continuously transitioning to yellow |
+| 400 to 1000 nits | Yellow continuously transitioning to red |
+| 1000 to 2000 nits | Red continuously transitioning to magenta |
+| 2000 to 4000 nits | Magenta continuously transitioning to blue violet |
+| 4000 nits and above | White |
 
 ## Global hotkeys
 
 | Hotkey | Action |
 | --- | --- |
-| `Ctrl + Alt + Shift + M` | Start or stop mirroring |
-| `Ctrl + Alt + Shift + Q` | Emergency stop |
-| `Ctrl + Alt + Shift + H` | Recall the control panel to the capture display |
+| `Ctrl + F8` | Start or stop mirroring |
+| `Ctrl + F9` | Toggle luminance false color |
+| `Ctrl + F10` | Capture the mirror image on every output display |
+| `Ctrl + F11` | Emergency stop |
+| `Ctrl + F12` | Recall the control panel to the capture display |
 
-Disable “Enable global hotkeys” if any shortcut conflicts with another application.
+## Output screenshots
+
+After mirroring starts, press `Ctrl + F10` to capture the image actually shown on every output display. A brief confirmation appears on the output display after the files are saved. The PNG includes the false color view, visible status panel, CIE 1976 gamut panel, and luminance markers. Multiple output displays are saved as separate images.
+
+“Save automatically” writes images directly to the configured folder. The default is a `Screenshots` folder beside `HDRScreenMirror.exe`. “Choose a location each time” opens a save dialog after the hotkey is pressed.
+
+The output windows are normally excluded from Windows screen capture protection, so a system screenshot tool may not see them. The built in capture briefly removes that exclusion while taking the image and restores it immediately afterward. PNG files are visual records of the false color analysis and do not contain the original FP16 HDR data.
 
 ## System tray
 
@@ -114,7 +149,7 @@ Some DRM protected content and some Windows MPO hardware overlays may not enter 
 
 ### The control panel is missing
 
-Press `Ctrl + Alt + Shift + H`. If tray mode is enabled, you can also double click the tray icon.
+Press `Ctrl + F12`. If tray mode is enabled, you can also double click the tray icon.
 
 ## Known limitations
 
@@ -123,3 +158,27 @@ Press `Ctrl + Alt + Shift + H`. If tray mode is enabled, you can also double cli
 3. Some MPO surfaces, protected videos, and exclusive fullscreen content may not be available to Desktop Duplication.
 4. When the driver only returns an SDR image, original HDR highlights cannot be reconstructed.
 5. Rare legacy monochrome or XOR cursors may be displayed using approximate colors.
+
+## Changelog
+
+### 1.4.0
+
+1. Added average frame luminance, maximum and minimum luminance, and cursor area luminance analysis.
+2. Added luminance false color output, maximum and minimum luminance markers, and a CIE 1976 `u′v′` gamut heatmap.
+3. Added output image capture with automatic or manual saving and a success notification.
+4. Added live analysis controls during mirroring and increased the full frame analysis refresh rate to approximately 250 ms.
+5. Changed global hotkeys to `Ctrl + F8` through `Ctrl + F12`, with repeat suppression and per shortcut conflict reporting.
+
+### 1.3.2
+
+1. Fixed mirror failures caused by Windows secure desktop and UAC administrator prompts.
+2. Added single instance operation; launching the application again recalls the existing control panel.
+
+### 1.3.1
+
+1. Added an option to move output display windows to the capture display when mirroring starts.
+2. Improved the main window layout and status reporting.
+
+### 1.3.0
+
+Initial public release.
