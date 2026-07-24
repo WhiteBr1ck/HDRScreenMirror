@@ -37,7 +37,8 @@ internal sealed class MirrorSession : IDisposable
     private readonly DisplayTarget _capture;
     private readonly IReadOnlyList<MirrorOutputBinding> _outputs;
     private readonly float _paperWhiteNits;
-    private readonly bool _vsync;
+    private readonly FrameRateMode _frameRateMode;
+    private readonly int _frameRateLimit;
     private readonly bool _renderCursor;
     private int _falseColorEnabled;
     private int _gamutAnalysisEnabled;
@@ -106,13 +107,17 @@ internal sealed class MirrorSession : IDisposable
     private int _probePointerY;
     private bool _probePointerInCaptureArea;
     private bool _captureAccessPaused;
+    private long _nextFixedFrameTimestamp;
+    private nint _fixedFrameTimer;
+    private bool _waitForOutputBeforeNextFrame;
 
     public MirrorSession(
         DisplayTarget capture,
         DisplayTarget present,
         nint outputWindow,
         float paperWhiteNits,
-        bool vsync,
+        FrameRateMode frameRateMode,
+        int frameRateLimit,
         bool renderCursor = true,
         bool falseColor = false,
         bool analyzeLuminance = true)
@@ -120,7 +125,8 @@ internal sealed class MirrorSession : IDisposable
             capture,
             [new MirrorOutputBinding(present, outputWindow)],
             paperWhiteNits,
-            vsync,
+            frameRateMode,
+            frameRateLimit,
             renderCursor,
             falseColor,
             analyzeLuminance)
@@ -131,7 +137,8 @@ internal sealed class MirrorSession : IDisposable
         DisplayTarget capture,
         IReadOnlyList<MirrorOutputBinding> outputs,
         float paperWhiteNits,
-        bool vsync,
+        FrameRateMode frameRateMode,
+        int frameRateLimit,
         bool renderCursor = true,
         bool falseColor = false,
         bool analyzeLuminance = true)
@@ -142,7 +149,8 @@ internal sealed class MirrorSession : IDisposable
         _capture = capture;
         _outputs = outputs;
         _paperWhiteNits = paperWhiteNits;
-        _vsync = vsync;
+        _frameRateMode = frameRateMode;
+        _frameRateLimit = Math.Clamp(frameRateLimit, 24, 500);
         _renderCursor = renderCursor;
         _falseColorEnabled = falseColor ? 1 : 0;
         _analyzeLuminance = analyzeLuminance;
@@ -232,6 +240,13 @@ internal sealed class MirrorSession : IDisposable
         _device = device;
         _context = context;
 
+        if (_frameRateMode == FrameRateMode.Fixed)
+        {
+            _fixedFrameTimer = NativeMethods.CreateFrameRateTimer();
+            if (_fixedFrameTimer == nint.Zero)
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        }
+
         bool duplicationReady = TryCreateDuplication();
         CreatePresenters();
         CreatePipeline();
@@ -302,8 +317,8 @@ internal sealed class MirrorSession : IDisposable
 
             SwapChainDescription1 description = new()
             {
-                Width = (uint)output.Display.Bounds.Width,
-                Height = (uint)output.Display.Bounds.Height,
+                Width = 0,
+                Height = 0,
                 Format = Format.R16G16B16A16_Float,
                 BufferCount = 2,
                 BufferUsage = Usage.RenderTargetOutput,
@@ -311,7 +326,9 @@ internal sealed class MirrorSession : IDisposable
                 Scaling = Scaling.Stretch,
                 SwapEffect = SwapEffect.FlipDiscard,
                 AlphaMode = AlphaMode.Ignore,
-                Flags = SwapChainFlags.None
+                Flags = _frameRateMode == FrameRateMode.Unlimited
+                    ? SwapChainFlags.None
+                    : SwapChainFlags.FrameLatencyWaitableObject
             };
 
             SwapChainFullscreenDescription fullscreenDescription = new() { Windowed = true };
@@ -333,9 +350,27 @@ internal sealed class MirrorSession : IDisposable
             }
 
             swapChain3.SetColorSpace1(ColorSpaceType.RgbFullG10NoneP709);
+            nint frameLatencyWaitableObject = nint.Zero;
+            if (_frameRateMode != FrameRateMode.Unlimited)
+            {
+                using IDXGISwapChain2 swapChain2 = swapChain.QueryInterface<IDXGISwapChain2>();
+                swapChain2.MaximumFrameLatency = 1;
+                frameLatencyWaitableObject = swapChain2.FrameLatencyWaitableObject;
+                if (frameLatencyWaitableObject == nint.Zero)
+                {
+                    swapChain.Dispose();
+                    throw new InvalidOperationException(
+                        Localization.F("FrameLatencyUnavailable", output.Display.DeviceName));
+                }
+            }
+
             ID3D11Texture2D backBuffer = swapChain.GetBuffer<ID3D11Texture2D>(0);
             ID3D11RenderTargetView renderTarget = _device!.CreateRenderTargetView(backBuffer);
-            _presenters.Add(new OutputPresenter(output.Display, swapChain, backBuffer, renderTarget));
+            _presenters.Add(new OutputPresenter(
+                swapChain,
+                backBuffer,
+                renderTarget,
+                frameLatencyWaitableObject));
         }
     }
 
@@ -387,6 +422,10 @@ internal sealed class MirrorSession : IDisposable
 
         while (!cancellationToken.IsCancellationRequested)
         {
+            WaitForFramePacing(cancellationToken);
+            if (cancellationToken.IsCancellationRequested)
+                break;
+
             bool rendered = AcquireAndRender(cancellationToken);
             if (rendered)
             {
@@ -451,6 +490,79 @@ internal sealed class MirrorSession : IDisposable
                 reportingClock.Restart();
                 intervalFrames = 0;
             }
+        }
+    }
+
+    private void WaitForFramePacing(CancellationToken cancellationToken)
+    {
+        if (_frameRateMode == FrameRateMode.Fixed)
+            WaitForFixedFrameRate(cancellationToken);
+
+        if (_waitForOutputBeforeNextFrame && !cancellationToken.IsCancellationRequested)
+        {
+            WaitForOutputAvailability(cancellationToken);
+            _waitForOutputBeforeNextFrame = false;
+        }
+    }
+
+    private void WaitForFixedFrameRate(CancellationToken cancellationToken)
+    {
+        long interval = Math.Max(1, Stopwatch.Frequency / _frameRateLimit);
+        long now = Stopwatch.GetTimestamp();
+        if (_nextFixedFrameTimestamp == 0)
+        {
+            _nextFixedFrameTimestamp = now;
+            return;
+        }
+
+        long deadline = _nextFixedFrameTimestamp + interval;
+        if (now > deadline + interval)
+            deadline = now;
+
+        now = Stopwatch.GetTimestamp();
+        long remaining = deadline - now;
+        if (remaining > 0)
+        {
+            long relativeHundredNanoseconds = Math.Max(
+                1,
+                (long)Math.Ceiling(remaining * 10_000_000.0 / Stopwatch.Frequency));
+            if (!NativeMethods.SetFrameRateTimer(_fixedFrameTimer, relativeHundredNanoseconds))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                uint result = NativeMethods.WaitForSingleObject(_fixedFrameTimer, 50);
+                if (result == NativeMethods.WaitObject0)
+                    break;
+                if (result == NativeMethods.WaitTimeout)
+                    continue;
+                if (result == NativeMethods.WaitFailed)
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+
+                throw new InvalidOperationException(Localization.T("FrameRateWaitFailed"));
+            }
+        }
+
+        _nextFixedFrameTimestamp = deadline;
+    }
+
+    private void WaitForOutputAvailability(CancellationToken cancellationToken)
+    {
+        if (_presenters.Count == 0)
+            return;
+
+        nint waitableObject = _presenters[^1].FrameLatencyWaitableObject;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            uint result = NativeMethods.WaitForSingleObject(waitableObject, 50);
+            if (result == NativeMethods.WaitObject0)
+                return;
+            if (result == NativeMethods.WaitTimeout)
+                continue;
+            if (result == NativeMethods.WaitFailed)
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+
+            throw new InvalidOperationException(Localization.T("FrameLatencyWaitFailed"));
         }
     }
 
@@ -584,7 +696,7 @@ internal sealed class MirrorSession : IDisposable
             OutputPresenter presenter = _presenters[i];
             _context!.OMSetRenderTargets(presenter.RenderTarget);
             _context.ClearRenderTargetView(presenter.RenderTarget, new Color4(0, 0, 0, 1));
-            _context.RSSetViewport(CalculateViewport(presenter.Display));
+            _context.RSSetViewport(CalculateViewport(presenter));
             _context.OMSetBlendState(_opaqueBlendState!);
             _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
             _context.VSSetShader(_vertexShader);
@@ -595,23 +707,26 @@ internal sealed class MirrorSession : IDisposable
             _context.Draw(3, 0);
             _context.PSSetShaderResource(0, null!);
 
-            DrawCursor(presenter.Display);
+            DrawCursor(presenter);
 
-            uint syncInterval = _vsync && i == _presenters.Count - 1 ? 1u : 0u;
+            uint syncInterval =
+                _frameRateMode != FrameRateMode.Unlimited && i == _presenters.Count - 1 ? 1u : 0u;
             Result result = presenter.SwapChain.Present(syncInterval, PresentFlags.None);
             result.CheckError();
         }
+
+        _waitForOutputBeforeNextFrame = _frameRateMode != FrameRateMode.Unlimited;
     }
 
-    private Viewport CalculateViewport(DisplayTarget present)
+    private Viewport CalculateViewport(OutputPresenter presenter)
     {
         float sourceWidth = _frameWidth;
         float sourceHeight = _frameHeight;
         if (_rotationCode is 1 or 3)
             (sourceWidth, sourceHeight) = (sourceHeight, sourceWidth);
 
-        float outputWidth = present.Bounds.Width;
-        float outputHeight = present.Bounds.Height;
+        float outputWidth = presenter.Width;
+        float outputHeight = presenter.Height;
         float scale = Math.Min(outputWidth / sourceWidth, outputHeight / sourceHeight);
         float width = sourceWidth * scale;
         float height = sourceHeight * scale;
@@ -729,12 +844,12 @@ internal sealed class MirrorSession : IDisposable
         _cursorHotSpotY = shapeInfo.HotSpot.Y;
     }
 
-    private void DrawCursor(DisplayTarget present)
+    private void DrawCursor(OutputPresenter presenter)
     {
         if (!_renderCursor || !_cursorVisible || _cursorView is null || _cursorWidth == 0 || _cursorHeight == 0)
             return;
 
-        Viewport imageViewport = CalculateViewport(present);
+        Viewport imageViewport = CalculateViewport(presenter);
         float sourceWidth = _rotationCode is 1 or 3 ? _frameHeight : _frameWidth;
         float scale = imageViewport.Width / sourceWidth;
         float x = imageViewport.X + (_cursorX - _cursorHotSpotX) * scale;
@@ -744,13 +859,13 @@ internal sealed class MirrorSession : IDisposable
             y,
             _cursorWidth * scale,
             _cursorHeight * scale,
-            present.Bounds.Width,
-            present.Bounds.Height,
+            presenter.Width,
+            presenter.Height,
             0,
             0);
         _context!.UpdateSubresource(constants, _cursorConstantBuffer!);
 
-        _context.RSSetViewport(new Viewport(0, 0, present.Bounds.Width, present.Bounds.Height));
+        _context.RSSetViewport(new Viewport(0, 0, presenter.Width, presenter.Height));
         _context.OMSetBlendState(_cursorBlendState!);
         _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleStrip);
         _context.VSSetShader(_cursorVertexShader);
@@ -1140,6 +1255,11 @@ internal sealed class MirrorSession : IDisposable
         foreach (OutputPresenter presenter in _presenters)
             presenter.Dispose();
         _presenters.Clear();
+        if (_fixedFrameTimer != nint.Zero)
+        {
+            NativeMethods.CloseHandle(_fixedFrameTimer);
+            _fixedFrameTimer = nint.Zero;
+        }
         _duplication?.Dispose();
         _captureOutput?.Dispose();
         _context?.Dispose();
@@ -1194,21 +1314,26 @@ internal sealed class MirrorSession : IDisposable
     private sealed class OutputPresenter : IDisposable
     {
         public OutputPresenter(
-            DisplayTarget display,
             IDXGISwapChain1 swapChain,
             ID3D11Texture2D backBuffer,
-            ID3D11RenderTargetView renderTarget)
+            ID3D11RenderTargetView renderTarget,
+            nint frameLatencyWaitableObject)
         {
-            Display = display;
             SwapChain = swapChain;
             BackBuffer = backBuffer;
             RenderTarget = renderTarget;
+            Texture2DDescription description = backBuffer.Description;
+            Width = description.Width;
+            Height = description.Height;
+            FrameLatencyWaitableObject = frameLatencyWaitableObject;
         }
 
-        public DisplayTarget Display { get; }
         public IDXGISwapChain1 SwapChain { get; }
         public ID3D11Texture2D BackBuffer { get; }
         public ID3D11RenderTargetView RenderTarget { get; }
+        public uint Width { get; }
+        public uint Height { get; }
+        public nint FrameLatencyWaitableObject { get; }
 
         public void Dispose()
         {

@@ -84,6 +84,13 @@ internal static class Program
         int captureIndex = ReadIntArgument(args, "--capture", 0);
         int presentIndex = ReadIntArgument(args, "--present", 1);
         int seconds = Math.Clamp(ReadIntArgument(args, "--seconds", 3), 1, 30);
+        int frameRateLimit = Math.Clamp(ReadIntArgument(args, "--fps", 60), 24, 500);
+        FrameRateMode frameRateMode = ReadStringArgument(args, "--frame-rate", "output") switch
+        {
+            "fixed" => FrameRateMode.Fixed,
+            "unlimited" => FrameRateMode.Unlimited,
+            _ => FrameRateMode.FollowOutput
+        };
         bool allOutputs = args.Any(x => string.Equals(x, "--all", StringComparison.OrdinalIgnoreCase));
 
         try
@@ -119,7 +126,12 @@ internal static class Program
 
             Exception? runtimeFailure = null;
             string lastStatus = "尚未收到状态";
-            using MirrorSession session = new(capture, bindings, 203, true);
+            using MirrorSession session = new(
+                capture,
+                bindings,
+                203,
+                frameRateMode,
+                frameRateLimit);
             session.StatusChanged += status =>
             {
                 lastStatus = status;
@@ -207,6 +219,17 @@ internal static class Program
             if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase) &&
                 int.TryParse(args[i + 1], out int value))
                 return value;
+        }
+
+        return defaultValue;
+    }
+
+    private static string ReadStringArgument(string[] args, string name, string defaultValue)
+    {
+        for (int i = 0; i + 1 < args.Length; i++)
+        {
+            if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase))
+                return args[i + 1].Trim().ToLowerInvariant();
         }
 
         return defaultValue;

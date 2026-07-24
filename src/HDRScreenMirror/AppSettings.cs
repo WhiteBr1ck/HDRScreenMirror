@@ -10,6 +10,8 @@ internal sealed class AppSettings
     public string Language { get; set; } = Localization.Automatic;
     public string ScreenshotSaveMode { get; set; } = "automatic";
     public string ScreenshotDirectory { get; set; } = string.Empty;
+    public string FrameRateMode { get; set; } = "output";
+    public int FrameRateLimit { get; set; } = 60;
 
     public static AppSettings Load()
     {

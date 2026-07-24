@@ -10,14 +10,17 @@ internal sealed class MirrorForm : Form
     private const int WsExNoActivate = 0x08000000;
     private readonly bool _mouseThrough;
     private readonly bool _excludeFromCapture;
+    private readonly Rectangle _outputBounds;
 
     public MirrorForm(Rectangle bounds, bool mouseThrough, bool excludeFromCapture = true)
     {
         _mouseThrough = mouseThrough;
         _excludeFromCapture = excludeFromCapture;
+        _outputBounds = bounds;
         Text = "HDRScreenMirror Output";
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
+        AutoScaleMode = AutoScaleMode.None;
         Bounds = bounds;
         TopMost = true;
         ShowInTaskbar = false;
@@ -42,7 +45,14 @@ internal sealed class MirrorForm : Form
     protected override void OnShown(EventArgs eventArgs)
     {
         base.OnShown(eventArgs);
+        Bounds = _outputBounds;
         SetCaptureExclusion(true);
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs eventArgs)
+    {
+        base.OnDpiChanged(eventArgs);
+        Bounds = _outputBounds;
     }
 
     internal void SetCaptureExclusion(bool excluded)

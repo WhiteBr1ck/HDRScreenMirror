@@ -39,6 +39,8 @@ It now includes a complete suite of HDR analysis tools.
 7. Global hotkeys.
 8. HDR luminance analysis tools.
 9. HDR gamut analysis tools.
+10. Three frame rate policies: follow the output display, fixed limit, and unlimited.
+11. Automatic mirror recovery and layout adaptation after Windows resolution or display mode changes.
 
 ## Requirements
 
@@ -79,7 +81,7 @@ For example, if three displays are connected to one GPU, HDRScreenMirror can cap
 | Option | Default | Purpose |
 | --- | --- | --- |
 | SDR white level | 203 nits | Controls SDR fallback and cursor brightness in the HDR output without changing the FP16 HDR image |
-| VSync | Enabled | Reduces visible tearing on the output |
+| Frame rate | Follow output display | Offers follow output display, fixed limit, and unlimited modes; the fixed limit supports 24 to 500 fps |
 | Output status panel | Enabled | Shows resolution, format, frame rate, cursor state, average frame luminance, maximum luminance, and minimum luminance in the top left corner |
 | Render cursor on output | Enabled | Composites the capture display cursor into the mirror image |
 | Show cursor area luminance | Enabled | Shows the average luminance of the area under the cursor to three decimal places; reports when the cursor is outside the capture area |
@@ -92,6 +94,16 @@ For example, if three displays are connected to one GPU, HDRScreenMirror can cap
 | Move output windows to capture display on start | Disabled | Prevents windows from becoming inaccessible behind the mirror; minimized, system, and elevated windows may not move |
 | Screenshot save mode | Save automatically | Can save directly or ask for a location on every capture |
 | Screenshot folder | `Screenshots` beside the application | Used by automatic saving and can be changed with “Choose folder” |
+
+### Frame rate policies
+
+| Mode | Purpose |
+| --- | --- |
+| Follow output display | The default. Paces processing with the output display and avoids unnecessary high frame rate processing when the capture display has a higher refresh rate |
+| Fixed limit | Limits processing to a configured rate from 24 to 500 fps |
+| Unlimited | Does not actively limit processing and favors the highest available capture rate at the cost of additional GPU usage |
+
+Stop mirroring before changing the frame rate policy. If the Windows resolution or display mode changes while mirroring, the application enumerates the displays again, rebuilds the output, and resumes the mirror automatically.
 
 ### CIE 1976 gamut analysis
 
@@ -160,6 +172,14 @@ Press `Ctrl + F12`. If tray mode is enabled, you can also double click the tray 
 5. Rare legacy monochrome or XOR cursors may be displayed using approximate colors.
 
 ## Changelog
+
+### 1.5.0
+
+1. Added follow output display, fixed limit, and unlimited frame rate policies, with follow output display as the default.
+2. Added a persistent fixed frame rate limit from 24 to 500 fps.
+3. Fixed image cropping when capture and output displays use different Windows resolutions or DPI scaling values.
+4. Added display mode change detection during mirroring, with automatic output adaptation and mirror recovery after a resolution change.
+5. Improved the default control panel size and option layout to prevent clipped descriptions and controls.
 
 ### 1.4.1
 

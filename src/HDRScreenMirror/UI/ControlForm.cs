@@ -15,6 +15,9 @@ internal sealed class ControlForm : Form
     private const int ScreenshotHotKeyId = 0x4853;
     private const string AutomaticScreenshotMode = "automatic";
     private const string PromptScreenshotMode = "prompt";
+    private const string FollowOutputFrameRateMode = "output";
+    private const string FixedFrameRateMode = "fixed";
+    private const string UnlimitedFrameRateMode = "unlimited";
 
     private readonly ComboBox _captureCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly ComboBox _presentCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
@@ -29,7 +32,28 @@ internal sealed class ControlForm : Form
     };
     private readonly Button _resetPaperWhiteButton = CreateButton("ResetDefault", 132);
     private readonly CheckBox _allOutputs = CreateOptionCheckBox("AllOutputs", false);
-    private readonly CheckBox _vsync = CreateOptionCheckBox("VSync", true);
+    private readonly ComboBox _frameRateModeCombo = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList,
+        Width = 190,
+        Margin = new Padding(3, 7, 6, 3)
+    };
+    private readonly NumericUpDown _frameRateLimit = new()
+    {
+        Minimum = 24,
+        Maximum = 500,
+        Value = 60,
+        Width = 72,
+        Margin = new Padding(3, 8, 2, 3)
+    };
+    private readonly Label _frameRateUnitLabel = new()
+    {
+        Text = Localization.T("FrameRateUnit"),
+        Tag = "FrameRateUnit",
+        AutoSize = true,
+        Padding = new Padding(0, 14, 8, 0),
+        ForeColor = Color.FromArgb(84, 91, 104)
+    };
     private readonly CheckBox _showStatusOverlay = CreateOptionCheckBox("StatusOverlay", true);
     private readonly CheckBox _renderCursor = CreateOptionCheckBox("RenderCursor", true);
     private readonly CheckBox _showPointerLuminance = CreateOptionCheckBox("ShowPointerLuminance", true);
@@ -93,6 +117,7 @@ internal sealed class ControlForm : Form
     private readonly List<MirrorForm> _mirrorWindows = [];
     private readonly List<StatusOverlayForm> _statusOverlays = [];
     private readonly List<AnalysisOverlayForm> _analysisOverlays = [];
+    private readonly System.Windows.Forms.Timer _displayChangeTimer = new() { Interval = 750 };
     private readonly AppSettings _settings;
     private readonly NotifyIcon _trayIcon;
     private readonly Icon _trayIconImage;
@@ -104,14 +129,18 @@ internal sealed class ControlForm : Form
     private bool _hasEnumeratedDisplays;
     private bool _updatingLanguageSelection;
     private bool _updatingScreenshotSelection;
+    private bool _updatingFrameRateSelection;
     private bool _takingScreenshot;
+    private bool _restartMirrorAfterDisplayChange;
+    private string? _displayChangeCaptureDevice;
+    private string? _displayChangePresentDevice;
 
     public ControlForm(AppSettings settings)
     {
         Text = "HDRScreenMirror";
-        Width = 1120;
+        Width = 1280;
         Height = 984;
-        MinimumSize = new Size(980, 728);
+        MinimumSize = new Size(1120, 728);
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
         BackColor = Color.FromArgb(248, 249, 251);
@@ -139,6 +168,7 @@ internal sealed class ControlForm : Form
         _stopButton.Enabled = false;
         InitializeLanguageSelector();
         InitializeScreenshotSelector();
+        InitializeFrameRateSelector();
         Controls.Add(BuildLayout());
         ApplyLanguage();
 
@@ -156,8 +186,11 @@ internal sealed class ControlForm : Form
         _enableHotKeys.CheckedChanged += (_, _) => RegisterConfiguredHotKeys();
         _minimizeToTray.CheckedChanged += (_, _) => SaveCloseBehavior();
         _screenshotModeCombo.SelectedIndexChanged += (_, _) => ChangeScreenshotMode();
+        _frameRateModeCombo.SelectedIndexChanged += (_, _) => ChangeFrameRateMode();
+        _frameRateLimit.ValueChanged += (_, _) => ChangeFrameRateLimit();
         _chooseScreenshotDirectoryButton.Click += (_, _) => ChooseScreenshotDirectory();
         _languageCombo.SelectedIndexChanged += (_, _) => ChangeLanguage();
+        _displayChangeTimer.Tick += (_, _) => ApplyDisplayChange();
         _trayShowItem.Click += (_, _) => RecallControlWindow();
         _trayToggleMirrorItem.Click += (_, _) => ToggleMirror();
         _trayExitItem.Click += (_, _) => ExitApplication();
@@ -272,26 +305,67 @@ internal sealed class ControlForm : Form
 
     private Control BuildPaperWhiteRow()
     {
-        FlowLayoutPanel row = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
-        row.Controls.Add(_paperWhite);
-        row.Controls.Add(_resetPaperWhiteButton);
+        TableLayoutPanel row = new()
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 1
+        };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 144));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.Controls.Add(_paperWhite, 0, 0);
+        row.Controls.Add(_resetPaperWhiteButton, 1, 0);
         row.Controls.Add(new Label
         {
             Text = Localization.T("PaperWhiteHelp"),
             Tag = "PaperWhiteHelp",
-            AutoSize = true,
-            Padding = new Padding(8, 14, 0, 0),
+            AutoSize = false,
+            AutoEllipsis = true,
+            UseMnemonic = false,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Padding = new Padding(8, 0, 4, 0),
             ForeColor = Color.FromArgb(84, 91, 104)
-        });
+        }, 2, 0);
         return row;
     }
 
     private Control BuildPresentOptions()
     {
-        FlowLayoutPanel row = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
-        row.Controls.Add(_vsync);
-        row.Controls.Add(_showStatusOverlay);
-        row.Controls.Add(_renderCursor);
+        TableLayoutPanel row = new()
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 1
+        };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        FlowLayoutPanel frameRateGroup = new()
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = Padding.Empty
+        };
+        frameRateGroup.Controls.Add(new Label
+        {
+            Text = Localization.T("FrameRateMode"),
+            Tag = "FrameRateMode",
+            AutoSize = true,
+            Padding = new Padding(0, 14, 2, 0),
+            ForeColor = Color.FromArgb(84, 91, 104)
+        });
+        frameRateGroup.Controls.Add(_frameRateModeCombo);
+        frameRateGroup.Controls.Add(_frameRateLimit);
+        frameRateGroup.Controls.Add(_frameRateUnitLabel);
+
+        row.Controls.Add(frameRateGroup, 0, 0);
+        row.Controls.Add(_showStatusOverlay, 1, 0);
+        row.Controls.Add(_renderCursor, 2, 0);
         return row;
     }
 
@@ -433,6 +507,62 @@ internal sealed class ControlForm : Form
         UpdateScreenshotSettingsState();
     }
 
+    private void InitializeFrameRateSelector()
+    {
+        _settings.FrameRateMode = NormalizeFrameRateMode(_settings.FrameRateMode);
+        _settings.FrameRateLimit = Math.Clamp(_settings.FrameRateLimit, 24, 500);
+        _frameRateLimit.Value = _settings.FrameRateLimit;
+        RefreshFrameRateModeChoices();
+        UpdateFrameRateSettingsState();
+    }
+
+    private void RefreshFrameRateModeChoices()
+    {
+        string selectedMode = NormalizeFrameRateMode(_settings.FrameRateMode);
+        _updatingFrameRateSelection = true;
+        _frameRateModeCombo.Items.Clear();
+        _frameRateModeCombo.Items.AddRange(
+        [
+            new FrameRateModeChoice(FollowOutputFrameRateMode, Localization.T("FrameRateFollowOutput")),
+            new FrameRateModeChoice(FixedFrameRateMode, Localization.T("FrameRateFixed")),
+            new FrameRateModeChoice(UnlimitedFrameRateMode, Localization.T("FrameRateUnlimited"))
+        ]);
+        _frameRateModeCombo.SelectedItem = _frameRateModeCombo.Items
+            .Cast<FrameRateModeChoice>()
+            .First(x => x.Code == selectedMode);
+        _updatingFrameRateSelection = false;
+    }
+
+    private void ChangeFrameRateMode()
+    {
+        if (_updatingFrameRateSelection ||
+            _frameRateModeCombo.SelectedItem is not FrameRateModeChoice choice)
+        {
+            return;
+        }
+
+        _settings.FrameRateMode = choice.Code;
+        _settings.Save();
+        UpdateFrameRateSettingsState();
+    }
+
+    private void ChangeFrameRateLimit()
+    {
+        if (_updatingFrameRateSelection)
+            return;
+
+        _settings.FrameRateLimit = decimal.ToInt32(_frameRateLimit.Value);
+        _settings.Save();
+    }
+
+    private void UpdateFrameRateSettingsState()
+    {
+        bool fixedFrameRate = NormalizeFrameRateMode(_settings.FrameRateMode) == FixedFrameRateMode;
+        _frameRateLimit.Visible = fixedFrameRate;
+        _frameRateUnitLabel.Visible = fixedFrameRate;
+        _frameRateLimit.Enabled = _session is null && fixedFrameRate;
+    }
+
     private void RefreshScreenshotModeChoices()
     {
         string selectedMode = NormalizeScreenshotMode(_settings.ScreenshotSaveMode);
@@ -503,7 +633,9 @@ internal sealed class ControlForm : Form
         SuspendLayout();
         ApplyLocalizedControlText(this);
         RefreshScreenshotModeChoices();
+        RefreshFrameRateModeChoices();
         UpdateScreenshotSettingsState();
+        UpdateFrameRateSettingsState();
         _shortcutLabel.Text = Localization.T("ShortcutText");
         _noteLabel.Text = Localization.T("MainNote");
         RefreshDisplayLabels();
@@ -575,6 +707,20 @@ internal sealed class ControlForm : Form
         _ => AutomaticScreenshotMode
     };
 
+    private static string NormalizeFrameRateMode(string? mode) => mode switch
+    {
+        FixedFrameRateMode => FixedFrameRateMode,
+        UnlimitedFrameRateMode => UnlimitedFrameRateMode,
+        _ => FollowOutputFrameRateMode
+    };
+
+    private FrameRateMode GetFrameRateMode() => NormalizeFrameRateMode(_settings.FrameRateMode) switch
+    {
+        FixedFrameRateMode => FrameRateMode.Fixed,
+        UnlimitedFrameRateMode => FrameRateMode.Unlimited,
+        _ => FrameRateMode.FollowOutput
+    };
+
     private string GetScreenshotDirectory() => string.IsNullOrWhiteSpace(_settings.ScreenshotDirectory)
         ? Path.Combine(AppContext.BaseDirectory, "Screenshots")
         : _settings.ScreenshotDirectory;
@@ -585,10 +731,15 @@ internal sealed class ControlForm : Form
         RegisterConfiguredHotKeys();
     }
 
-    private void RefreshDisplays()
+    private bool RefreshDisplays(
+        string? captureDeviceName = null,
+        string? presentDeviceName = null)
     {
         if (_session is not null)
-            return;
+            return false;
+
+        captureDeviceName ??= (_captureCombo.SelectedItem as DisplayTarget)?.DeviceName;
+        presentDeviceName ??= (_presentCombo.SelectedItem as DisplayTarget)?.DeviceName;
 
         try
         {
@@ -601,14 +752,17 @@ internal sealed class ControlForm : Form
             {
                 _statusLabel.Text = Localization.T("StatusNoDisplays");
                 _startButton.Enabled = false;
-                return;
+                return false;
             }
 
-            _captureCombo.SelectedIndex = 0;
-            _presentCombo.SelectedIndex = FindDefaultPresentIndex();
+            if (!SelectDisplay(_captureCombo, captureDeviceName))
+                _captureCombo.SelectedIndex = 0;
+            if (!SelectDisplay(_presentCombo, presentDeviceName))
+                _presentCombo.SelectedIndex = FindDefaultPresentIndex();
             _startButton.Enabled = _displays.Count > 1;
             _statusLabel.Text = Localization.F("StatusFoundDisplays", _displays.Count);
             UpdatePresentSelectorState();
+            return true;
         }
         catch (Exception exception)
         {
@@ -619,7 +773,26 @@ internal sealed class ControlForm : Form
                 Localization.T("EnumerateFailed"),
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
+            return false;
         }
+    }
+
+    private static bool SelectDisplay(ComboBox comboBox, string? deviceName)
+    {
+        if (string.IsNullOrWhiteSpace(deviceName))
+            return false;
+
+        for (int i = 0; i < comboBox.Items.Count; i++)
+        {
+            if (comboBox.Items[i] is DisplayTarget display &&
+                string.Equals(display.DeviceName, deviceName, StringComparison.OrdinalIgnoreCase))
+            {
+                comboBox.SelectedIndex = i;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private int FindDefaultPresentIndex()
@@ -627,19 +800,37 @@ internal sealed class ControlForm : Form
         if (_displays.Count < 2)
             return 0;
 
-        DisplayTarget capture = _displays[0];
-        for (int i = 1; i < _displays.Count; i++)
+        DisplayTarget capture = _captureCombo.SelectedItem as DisplayTarget ?? _displays[0];
+        for (int i = 0; i < _displays.Count; i++)
         {
-            if (_displays[i].AdapterIndex == capture.AdapterIndex)
+            if (_displays[i].GlobalIndex != capture.GlobalIndex &&
+                _displays[i].AdapterIndex == capture.AdapterIndex)
                 return i;
         }
 
-        return 1;
+        for (int i = 0; i < _displays.Count; i++)
+        {
+            if (_displays[i].GlobalIndex != capture.GlobalIndex)
+                return i;
+        }
+
+        return 0;
     }
 
-    private void StartMirror()
+    private void StartMirror(bool refreshDisplayState = true, bool moveOutputWindows = true)
     {
-        if (_session is not null || _captureCombo.SelectedItem is not DisplayTarget capture)
+        if (_session is not null)
+            return;
+
+        if (refreshDisplayState)
+        {
+            string? captureDeviceName = (_captureCombo.SelectedItem as DisplayTarget)?.DeviceName;
+            string? presentDeviceName = (_presentCombo.SelectedItem as DisplayTarget)?.DeviceName;
+            if (!RefreshDisplays(captureDeviceName, presentDeviceName))
+                return;
+        }
+
+        if (_captureCombo.SelectedItem is not DisplayTarget capture)
             return;
 
         IReadOnlyList<DisplayTarget> targets = ResolveOutputTargets(capture);
@@ -670,7 +861,7 @@ internal sealed class ControlForm : Form
         try
         {
             PositionOnCaptureDisplay(capture);
-            if (_moveOutputWindows.Checked)
+            if (moveOutputWindows && _moveOutputWindows.Checked)
             {
                 Rectangle captureWorkArea = FindScreenForDisplay(capture).WorkingArea;
                 WindowRelocator.MoveWindowsToCapture(targets, captureWorkArea);
@@ -711,7 +902,8 @@ internal sealed class ControlForm : Form
                 capture,
                 bindings,
                 (float)_paperWhite.Value,
-                _vsync.Checked,
+                GetFrameRateMode(),
+                decimal.ToInt32(_frameRateLimit.Value),
                 _renderCursor.Checked,
                 _falseColor.Checked,
                 true);
@@ -824,7 +1016,8 @@ internal sealed class ControlForm : Form
         _allOutputs.Enabled = !running;
         _paperWhite.Enabled = !running;
         _resetPaperWhiteButton.Enabled = !running;
-        _vsync.Enabled = !running;
+        _frameRateModeCombo.Enabled = !running;
+        UpdateFrameRateSettingsState();
         _showStatusOverlay.Enabled = true;
         _renderCursor.Enabled = !running;
         _showPointerLuminance.Enabled = true;
@@ -1078,6 +1271,12 @@ internal sealed class ControlForm : Form
 
     private void OnSessionFailed(Exception exception) => PostToUi(() =>
     {
+        if (_restartMirrorAfterDisplayChange || _displayChangeTimer.Enabled)
+        {
+            StopMirror();
+            return;
+        }
+
         MessageBox.Show(
             exception.ToString(),
             Localization.T("RuntimeFailed"),
@@ -1169,6 +1368,8 @@ internal sealed class ControlForm : Form
 
         _exitRequested = true;
         UnregisterConfiguredHotKeys();
+        _displayChangeTimer.Stop();
+        _displayChangeTimer.Dispose();
         StopMirror();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
@@ -1212,6 +1413,13 @@ internal sealed class ControlForm : Form
 
     protected override void WndProc(ref Message message)
     {
+        if (message.Msg == NativeMethods.WmDisplayChange)
+        {
+            base.WndProc(ref message);
+            ScheduleDisplayChange();
+            return;
+        }
+
         if (message.Msg == NativeMethods.WmHotKey)
         {
             int hotKeyId = message.WParam.ToInt32();
@@ -1246,6 +1454,40 @@ internal sealed class ControlForm : Form
         }
 
         base.WndProc(ref message);
+    }
+
+    private void ScheduleDisplayChange()
+    {
+        if (!_restartMirrorAfterDisplayChange)
+        {
+            _restartMirrorAfterDisplayChange = _session is not null;
+            _displayChangeCaptureDevice = (_captureCombo.SelectedItem as DisplayTarget)?.DeviceName;
+            _displayChangePresentDevice = (_presentCombo.SelectedItem as DisplayTarget)?.DeviceName;
+        }
+
+        _displayChangeTimer.Stop();
+        _displayChangeTimer.Start();
+    }
+
+    private void ApplyDisplayChange()
+    {
+        _displayChangeTimer.Stop();
+
+        bool restartMirror = _restartMirrorAfterDisplayChange;
+        string? captureDeviceName = _displayChangeCaptureDevice;
+        string? presentDeviceName = _displayChangePresentDevice;
+        _restartMirrorAfterDisplayChange = false;
+        _displayChangeCaptureDevice = null;
+        _displayChangePresentDevice = null;
+
+        if (restartMirror)
+            StopMirror();
+
+        if (!RefreshDisplays(captureDeviceName, presentDeviceName))
+            return;
+
+        if (restartMirror)
+            StartMirror(false, false);
     }
 
     private void RegisterConfiguredHotKeys()
@@ -1301,6 +1543,11 @@ internal sealed class ControlForm : Form
     }
 
     private sealed record ScreenshotModeChoice(string Code, string DisplayName)
+    {
+        public override string ToString() => DisplayName;
+    }
+
+    private sealed record FrameRateModeChoice(string Code, string DisplayName)
     {
         public override string ToString() => DisplayName;
     }
