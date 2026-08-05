@@ -73,6 +73,7 @@ internal sealed class AppSettings
     }
 
     private static string GetSettingsPath() => Path.Combine(
-        AppContext.BaseDirectory,
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "HDRScreenMirror",
         "settings.json");
 }

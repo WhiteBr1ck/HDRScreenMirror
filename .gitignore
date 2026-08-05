@@ -46,7 +46,6 @@ coverage.*
 .env.*
 !.env.example
 secrets.json
-settings.json
 appsettings.*.local.json
 
 # Operating system metadata

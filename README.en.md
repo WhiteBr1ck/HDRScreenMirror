@@ -63,7 +63,7 @@ It now includes a complete suite of HDR analysis tools.
 
 No installer is required. Delete the extracted directory to remove the application.
 
-Application settings and ABL profiles are stored in `settings.json` beside the executable.
+Application settings and ABL profiles are stored in `%LocalAppData%\HDRScreenMirror\settings.json`, so moving or replacing the application directory does not remove them.
 
 ## How to use it
 
@@ -193,6 +193,10 @@ Press `Ctrl + F12`. If tray mode is enabled, you can also double click the tray 
 
 ## Changelog
 
+### 1.6.1
+
+1. Restored application settings and ABL profiles to `%LocalAppData%\HDRScreenMirror\settings.json`.
+
 ### 1.5.0
 
 1. Added ABL simulation using user supplied OLED HDR window luminance measurements and an editable EOTF curve to estimate physical display luminance.
@@ -201,7 +205,6 @@ Press `Ctrl + F12`. If tray mode is enabled, you can also double click the tray 
 4. Fixed image cropping when capture and output displays use different Windows resolutions or DPI scaling values.
 5. Added display mode change detection during mirroring, with automatic output adaptation and mirror recovery after a resolution change.
 6. Improved the default control panel size and option layout to prevent clipped descriptions and controls.
-7. Moved application settings to `settings.json` beside the executable. Settings from `%LocalAppData%\HDRScreenMirror\settings.json` are not migrated automatically. To keep them, copy that file into the application directory before launching the new version for the first time.
 
 ### 1.4.1
 

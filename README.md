@@ -63,7 +63,7 @@ HDRScreenMirror 就可以从一块显示器实时捕获桌面，再通过 Direct
 
 软件不需要安装程序，删除解压目录即可移除。
 
-程序设置和 ABL 配置档案保存在软件目录中的 `settings.json`。
+程序设置和 ABL 配置档案保存在 `%LocalAppData%\HDRScreenMirror\settings.json`，移动或替换软件目录不会清除这些设置。
 
 ## 使用方法
 
@@ -193,9 +193,12 @@ HDRScreenMirror 就可以从一块显示器实时捕获桌面，再通过 Direct
 
 ## 更新日志
 
+### 1.6.1
+
+1. 恢复将程序设置和 ABL 配置保存在 `%LocalAppData%\HDRScreenMirror\settings.json`。
+
 ### 1.6.0
 1. 新增 ABL 模拟的功能，可以输入你 OLED 显示器的 HDR 窗口亮度和 EOTF 曲线，它即可自动估算出显示器的物理亮度。
-2. 设置文件改为保存在 EXE 同目录的 `settings.json`。旧版本位于 `%LocalAppData%\HDRScreenMirror\settings.json` 的设置不会自动迁移，如需保留，请在首次启动新版前手动复制到软件目录。
 
 ### 1.5.0
 
