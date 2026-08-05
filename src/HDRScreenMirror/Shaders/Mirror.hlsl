@@ -8,6 +8,8 @@ cbuffer MirrorConstants : register(b0)
     uint FrameHeight;
     int PointerX;
     int PointerY;
+    float AblReferencePeakNits;
+    float3 AblPadding;
 };
 
 #include "LuminanceCommon.hlsli"

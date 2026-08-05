@@ -10,6 +10,8 @@ cbuffer MirrorConstants : register(b0)
     uint FrameHeight;
     int PointerX;
     int PointerY;
+    float AblReferencePeakNits;
+    float3 AblPadding;
 };
 
 Texture2D<float4> SourceTexture : register(t0);

@@ -42,6 +42,10 @@ internal sealed class MirrorSession : IDisposable
     private readonly bool _renderCursor;
     private int _falseColorEnabled;
     private int _gamutAnalysisEnabled;
+    private AblProfile? _ablProfile;
+    private float[] _ablEotfLut = CreateDefaultEotfLut();
+    private int _ablProfileVersion;
+    private int _lastAnalyzedAblProfileVersion;
     private readonly bool _analyzeLuminance;
     private readonly CancellationTokenSource _cancellation = new();
     private readonly TaskCompletionSource _initialized = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -95,6 +99,7 @@ internal sealed class MirrorSession : IDisposable
     private uint _lastFrameMaximumY;
     private uint _lastFrameMinimumX;
     private uint _lastFrameMinimumY;
+    private AblLuminanceEstimate? _lastAblEstimate;
     private int _rotationCode;
     private bool _cursorVisible;
     private int _cursorX;
@@ -168,6 +173,14 @@ internal sealed class MirrorSession : IDisposable
 
     public void SetGamutAnalysis(bool enabled) =>
         Volatile.Write(ref _gamutAnalysisEnabled, enabled ? 1 : 0);
+
+    public void SetAblProfile(AblProfile? profile)
+    {
+        AblProfile? clone = profile?.Clone();
+        Volatile.Write(ref _ablProfile, clone);
+        Volatile.Write(ref _ablEotfLut, clone?.BuildEotfLut() ?? CreateDefaultEotfLut());
+        Interlocked.Increment(ref _ablProfileVersion);
+    }
 
     public void Start()
     {
@@ -435,7 +448,9 @@ internal sealed class MirrorSession : IDisposable
                 if (_analyzeLuminance && luminanceClock.Elapsed >= PointerAnalysisInterval)
                 {
                     bool refreshFrameLuminance =
-                        !_hasFrameLuminance || frameLuminanceClock.Elapsed >= FrameAnalysisInterval;
+                        !_hasFrameLuminance ||
+                        frameLuminanceClock.Elapsed >= FrameAnalysisInterval ||
+                        _lastAnalyzedAblProfileVersion != Volatile.Read(ref _ablProfileVersion);
                     LuminanceTelemetry? luminance = AnalyzeLuminance(refreshFrameLuminance);
                     if (luminance is not null)
                         LuminanceChanged?.Invoke(luminance);
@@ -878,15 +893,47 @@ internal sealed class MirrorSession : IDisposable
         _context.PSSetShaderResource(1, null!);
     }
 
-    private MirrorConstants CreateMirrorConstants() => new(
-        _paperWhiteNits,
-        _inputMode,
-        (uint)_rotationCode,
-        Volatile.Read(ref _falseColorEnabled) != 0 ? 1u : 0u,
-        _frameWidth,
-        _frameHeight,
-        _probePointerX,
-        _probePointerY);
+    private unsafe MirrorConstants CreateMirrorConstants(float? ablReferencePeakNits = null)
+    {
+        float referencePeak = ablReferencePeakNits ??
+            (float)(Volatile.Read(ref _ablProfile)?.ReferencePeakNits ?? 10000);
+        referencePeak = Math.Clamp(referencePeak, 0.001f, 10000f);
+        MirrorConstants constants = new()
+        {
+            PaperWhiteNits = _paperWhiteNits,
+            InputMode = _inputMode,
+            Rotation = (uint)_rotationCode,
+            FalseColorEnabled = Volatile.Read(ref _falseColorEnabled) != 0 ? 1u : 0u,
+            FrameWidth = _frameWidth,
+            FrameHeight = _frameHeight,
+            PointerX = _probePointerX,
+            PointerY = _probePointerY,
+            AblReferencePeakNits = referencePeak,
+            AblCustomEotfEnabled = Volatile.Read(ref _ablProfile)?.UsesStandardPq == false ? 1u : 0u,
+            AblClipPq = (float)Math.Clamp(
+                (Volatile.Read(ref _ablProfile)?.EffectiveEotfClipPqPercent ?? 100) / 100.0,
+                0.01,
+                1)
+        };
+        float[] lut = Volatile.Read(ref _ablEotfLut);
+        for (int index = 0; index < AblProfile.EotfLutSize; index++)
+            constants.AblEotfLut[index] = lut[index];
+        return constants;
+    }
+
+    private static float[] CreateDefaultEotfLut()
+    {
+        AblProfile profile = new()
+        {
+            Name = "Default",
+            Points =
+            [
+                new AblMeasurementPoint { AplPercent = 1, PeakNits = 10000 },
+                new AblMeasurementPoint { AplPercent = 100, PeakNits = 10000 }
+            ]
+        };
+        return profile.BuildEotfLut();
+    }
 
     private void CreateAnalysisResources()
     {
@@ -1038,7 +1085,10 @@ internal sealed class MirrorSession : IDisposable
             return null;
 
         UpdateProbePointerPosition();
-        _context!.UpdateSubresource(CreateMirrorConstants(), _constantBuffer);
+        AblProfile? ablProfile = Volatile.Read(ref _ablProfile);
+        int ablProfileVersion = Volatile.Read(ref _ablProfileVersion);
+        float ablReferencePeakNits = (float)(ablProfile?.ReferencePeakNits ?? 10000);
+        _context!.UpdateSubresource(CreateMirrorConstants(ablReferencePeakNits), _constantBuffer);
         _context.CSSetConstantBuffer(0, _constantBuffer);
         _context.CSSetShaderResource(0, _frameView);
 
@@ -1069,6 +1119,9 @@ internal sealed class MirrorSession : IDisposable
             double sum = 0;
             double minimum = double.PositiveInfinity;
             double maximum = 0;
+            double clippedSum = 0;
+            double clippedMinimum = double.PositiveInfinity;
+            double clippedMaximum = 0;
             ulong count = 0;
             uint maximumX = 0;
             uint maximumY = 0;
@@ -1103,6 +1156,9 @@ internal sealed class MirrorSession : IDisposable
                             maximumY = result.MaximumY;
                         }
                         count += result.Count;
+                        clippedSum += result.ClippedSum;
+                        clippedMinimum = Math.Min(clippedMinimum, result.ClippedMinimum);
+                        clippedMaximum = Math.Max(clippedMaximum, result.ClippedMaximum);
                     }
                 }
             }
@@ -1121,10 +1177,18 @@ internal sealed class MirrorSession : IDisposable
             _lastFrameMaximumY = maximumY;
             _lastFrameMinimumX = minimumX;
             _lastFrameMinimumY = minimumY;
+            double clippedAverage = clippedSum / count;
+            _lastAblEstimate = AblEstimator.Calculate(
+                ablProfile,
+                clippedAverage,
+                clippedMaximum,
+                double.IsPositiveInfinity(clippedMinimum) ? 0 : clippedMinimum);
+            _lastAnalyzedAblProfileVersion = ablProfileVersion;
             _hasFrameLuminance = true;
         }
 
         double pointerRegionNits = 0;
+        double? pointerScaledNits = null;
         if (pointerInCaptureArea)
         {
             MappedSubresource pointerMap = _context.Map(
@@ -1137,7 +1201,14 @@ internal sealed class MirrorSession : IDisposable
                 {
                     LuminanceGroupResult result = *(LuminanceGroupResult*)pointerMap.DataPointer;
                     if (result.Count > 0)
+                    {
                         pointerRegionNits = result.Sum / result.Count;
+                        if (_lastAblEstimate is AblLuminanceEstimate estimate)
+                        {
+                            double clippedPointerNits = result.ClippedSum / result.Count;
+                            pointerScaledNits = clippedPointerNits * estimate.ScaleFactor;
+                        }
+                    }
                     else
                         pointerInCaptureArea = false;
                 }
@@ -1160,7 +1231,9 @@ internal sealed class MirrorSession : IDisposable
             _lastFrameMinimumX,
             _lastFrameMinimumY,
             pointerInCaptureArea,
-            pointerRegionNits);
+            pointerRegionNits,
+            pointerScaledNits,
+            _lastAblEstimate);
     }
 
     private void UpdateProbePointerPosition()
@@ -1213,6 +1286,7 @@ internal sealed class MirrorSession : IDisposable
         _gamutReadback = null;
         _frameStatsCount = 0;
         _hasFrameLuminance = false;
+        _lastAblEstimate = null;
     }
 
     private static int MapRotation(ModeRotation rotation) => rotation switch
@@ -1279,15 +1353,22 @@ internal sealed class MirrorSession : IDisposable
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private readonly record struct MirrorConstants(
-        float PaperWhiteNits,
-        uint InputMode,
-        uint Rotation,
-        uint FalseColorEnabled,
-        uint FrameWidth,
-        uint FrameHeight,
-        int PointerX,
-        int PointerY);
+    private unsafe struct MirrorConstants
+    {
+        public float PaperWhiteNits;
+        public uint InputMode;
+        public uint Rotation;
+        public uint FalseColorEnabled;
+        public uint FrameWidth;
+        public uint FrameHeight;
+        public int PointerX;
+        public int PointerY;
+        public float AblReferencePeakNits;
+        public uint AblCustomEotfEnabled;
+        public float AblClipPq;
+        public float AblPadding2;
+        public fixed float AblEotfLut[AblProfile.EotfLutSize];
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private readonly record struct LuminanceGroupResult(
@@ -1298,7 +1379,11 @@ internal sealed class MirrorSession : IDisposable
         uint MinimumX,
         uint MinimumY,
         uint MaximumX,
-        uint MaximumY);
+        uint MaximumY,
+        float ClippedSum,
+        float ClippedMinimum,
+        float ClippedMaximum,
+        uint ClippedPadding);
 
     [StructLayout(LayoutKind.Sequential)]
     private readonly record struct CursorConstants(

@@ -59,6 +59,14 @@ internal sealed class ControlForm : Form
     private readonly CheckBox _showPointerLuminance = CreateOptionCheckBox("ShowPointerLuminance", true);
     private readonly CheckBox _falseColor = CreateOptionCheckBox("FalseColor", false);
     private readonly CheckBox _showLuminanceMarkers = CreateOptionCheckBox("LuminanceMarkers", false);
+    private readonly CheckBox _showAblEstimate;
+    private readonly ComboBox _ablProfileCombo = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList,
+        Width = 230,
+        Margin = new Padding(3, 6, 6, 3)
+    };
+    private readonly Button _manageAblProfilesButton = CreateButton("ManageAblProfiles", 154);
     private readonly CheckBox _showCieAnalysis = CreateOptionCheckBox("CieAnalysis", false);
     private readonly CheckBox _mouseThrough = CreateOptionCheckBox("MouseThrough", false);
     private readonly CheckBox _enableHotKeys = CreateOptionCheckBox("EnableHotkeys", true);
@@ -130,6 +138,7 @@ internal sealed class ControlForm : Form
     private bool _updatingLanguageSelection;
     private bool _updatingScreenshotSelection;
     private bool _updatingFrameRateSelection;
+    private bool _updatingAblProfileSelection;
     private bool _takingScreenshot;
     private bool _restartMirrorAfterDisplayChange;
     private string? _displayChangeCaptureDevice;
@@ -146,7 +155,9 @@ internal sealed class ControlForm : Form
         BackColor = Color.FromArgb(248, 249, 251);
 
         _settings = settings;
+        _settings.NormalizeAblProfiles();
         _minimizeToTray = CreateOptionCheckBox("MinimizeToTray", _settings.MinimizeToTrayOnClose);
+        _showAblEstimate = CreateOptionCheckBox("ShowAblEstimate", _settings.AblEstimationEnabled);
         _trayShowItem = new ToolStripMenuItem(Localization.T("TrayShow"));
         _trayToggleMirrorItem = new ToolStripMenuItem(Localization.T("TrayStart"));
         _trayExitItem = new ToolStripMenuItem(Localization.T("TrayExit"));
@@ -169,6 +180,7 @@ internal sealed class ControlForm : Form
         InitializeLanguageSelector();
         InitializeScreenshotSelector();
         InitializeFrameRateSelector();
+        InitializeAblProfiles();
         Controls.Add(BuildLayout());
         ApplyLanguage();
 
@@ -182,6 +194,9 @@ internal sealed class ControlForm : Form
         _showPointerLuminance.CheckedChanged += (_, _) => UpdatePointerLuminanceVisibility();
         _falseColor.CheckedChanged += (_, _) => UpdateFalseColorMode();
         _showLuminanceMarkers.CheckedChanged += (_, _) => UpdateLuminanceMarkerVisibility();
+        _showAblEstimate.CheckedChanged += (_, _) => ChangeAblEstimation();
+        _ablProfileCombo.SelectedIndexChanged += (_, _) => ChangeAblProfile();
+        _manageAblProfilesButton.Click += (_, _) => ManageAblProfiles();
         _showCieAnalysis.CheckedChanged += (_, _) => UpdateCieAnalysisVisibility();
         _enableHotKeys.CheckedChanged += (_, _) => RegisterConfiguredHotKeys();
         _minimizeToTray.CheckedChanged += (_, _) => SaveCloseBehavior();
@@ -215,7 +230,7 @@ internal sealed class ControlForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
@@ -380,11 +395,49 @@ internal sealed class ControlForm : Form
 
     private Control BuildLuminanceOptions()
     {
-        FlowLayoutPanel row = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
-        row.Controls.Add(_showPointerLuminance);
-        row.Controls.Add(_falseColor);
-        row.Controls.Add(_showLuminanceMarkers);
-        return row;
+        TableLayoutPanel layout = new()
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = Padding.Empty
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+
+        FlowLayoutPanel analysisRow = new()
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = Padding.Empty
+        };
+        analysisRow.Controls.Add(_showPointerLuminance);
+        analysisRow.Controls.Add(_falseColor);
+        analysisRow.Controls.Add(_showLuminanceMarkers);
+
+        FlowLayoutPanel ablRow = new()
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = Padding.Empty
+        };
+        ablRow.Controls.Add(_showAblEstimate);
+        ablRow.Controls.Add(new Label
+        {
+            Text = Localization.T("AblProfile"),
+            Tag = "AblProfile",
+            AutoSize = true,
+            Padding = new Padding(8, 12, 2, 0),
+            ForeColor = Color.FromArgb(84, 91, 104)
+        });
+        ablRow.Controls.Add(_ablProfileCombo);
+        ablRow.Controls.Add(_manageAblProfilesButton);
+
+        layout.Controls.Add(analysisRow, 0, 0);
+        layout.Controls.Add(ablRow, 0, 1);
+        return layout;
     }
 
     private Control BuildColorAnalysisOptions()
@@ -516,6 +569,108 @@ internal sealed class ControlForm : Form
         UpdateFrameRateSettingsState();
     }
 
+    private void InitializeAblProfiles()
+    {
+        _settings.NormalizeAblProfiles();
+        _showAblEstimate.Checked =
+            _settings.AblEstimationEnabled && GetActiveAblProfile() is not null;
+        RefreshAblProfileChoices();
+        UpdateAblControlsState();
+    }
+
+    private void RefreshAblProfileChoices()
+    {
+        string activeProfileId = _settings.ActiveAblProfileId;
+        AblProfile[] validProfiles = _settings.AblProfiles
+            .Where(profile => profile.IsValid)
+            .ToArray();
+
+        _updatingAblProfileSelection = true;
+        _ablProfileCombo.Items.Clear();
+        foreach (AblProfile profile in validProfiles)
+            _ablProfileCombo.Items.Add(new AblProfileChoice(profile.Id, profile.Name));
+
+        _ablProfileCombo.SelectedItem = _ablProfileCombo.Items
+            .Cast<AblProfileChoice>()
+            .FirstOrDefault(choice =>
+                string.Equals(choice.Id, activeProfileId, StringComparison.Ordinal));
+        if (_ablProfileCombo.SelectedIndex < 0 && _ablProfileCombo.Items.Count > 0)
+        {
+            _ablProfileCombo.SelectedIndex = 0;
+            _settings.ActiveAblProfileId = ((AblProfileChoice)_ablProfileCombo.SelectedItem!).Id;
+        }
+        _updatingAblProfileSelection = false;
+    }
+
+    private void ChangeAblProfile()
+    {
+        if (_updatingAblProfileSelection ||
+            _ablProfileCombo.SelectedItem is not AblProfileChoice choice)
+        {
+            return;
+        }
+
+        _settings.ActiveAblProfileId = choice.Id;
+        _settings.Save();
+        UpdateAblControlsState();
+        ApplyAblProfileToSession();
+    }
+
+    private void ChangeAblEstimation()
+    {
+        if (_showAblEstimate.Checked && GetActiveAblProfile() is null)
+        {
+            _showAblEstimate.Checked = false;
+            return;
+        }
+
+        _settings.AblEstimationEnabled = _showAblEstimate.Checked;
+        _settings.Save();
+        ApplyAblProfileToSession();
+    }
+
+    private void ManageAblProfiles()
+    {
+        using AblProfileManagerForm dialog = new(
+            _settings.AblProfiles,
+            _settings.ActiveAblProfileId);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        _settings.AblProfiles = dialog.Profiles.Select(profile => profile.Clone()).ToList();
+        _settings.ActiveAblProfileId = dialog.ActiveProfileId;
+        _settings.NormalizeAblProfiles();
+        if (GetActiveAblProfile() is null)
+        {
+            _settings.AblEstimationEnabled = false;
+            _showAblEstimate.Checked = false;
+        }
+        _settings.Save();
+        RefreshAblProfileChoices();
+        UpdateAblControlsState();
+        ApplyAblProfileToSession();
+    }
+
+    private AblProfile? GetActiveAblProfile() => _settings.AblProfiles.FirstOrDefault(profile =>
+        profile.IsValid &&
+        string.Equals(profile.Id, _settings.ActiveAblProfileId, StringComparison.Ordinal));
+
+    private void UpdateAblControlsState()
+    {
+        bool hasActiveProfile = GetActiveAblProfile() is not null;
+        _showAblEstimate.Enabled = hasActiveProfile;
+        _ablProfileCombo.Enabled = _ablProfileCombo.Items.Count > 0;
+        _manageAblProfilesButton.Enabled = true;
+    }
+
+    private void ApplyAblProfileToSession()
+    {
+        AblProfile? profile = _showAblEstimate.Checked ? GetActiveAblProfile() : null;
+        _session?.SetAblProfile(profile);
+        foreach (StatusOverlayForm overlay in _statusOverlays)
+            overlay.SetAblEstimate(profile is not null, profile?.Name ?? string.Empty);
+    }
+
     private void RefreshFrameRateModeChoices()
     {
         string selectedMode = NormalizeFrameRateMode(_settings.FrameRateMode);
@@ -634,8 +789,10 @@ internal sealed class ControlForm : Form
         ApplyLocalizedControlText(this);
         RefreshScreenshotModeChoices();
         RefreshFrameRateModeChoices();
+        RefreshAblProfileChoices();
         UpdateScreenshotSettingsState();
         UpdateFrameRateSettingsState();
+        UpdateAblControlsState();
         _shortcutLabel.Text = Localization.T("ShortcutText");
         _noteLabel.Text = Localization.T("MainNote");
         RefreshDisplayLabels();
@@ -860,6 +1017,8 @@ internal sealed class ControlForm : Form
 
         try
         {
+            AblProfile? activeAblProfile =
+                _showAblEstimate.Checked ? GetActiveAblProfile() : null;
             PositionOnCaptureDisplay(capture);
             if (moveOutputWindows && _moveOutputWindows.Checked)
             {
@@ -882,6 +1041,9 @@ internal sealed class ControlForm : Form
                     _mouseThrough.Checked,
                     _showPointerLuminance.Checked,
                     _falseColor.Checked);
+                overlay.SetAblEstimate(
+                    activeAblProfile is not null,
+                    activeAblProfile?.Name ?? string.Empty);
                 overlay.Show(mirrorWindow);
                 if (!_showStatusOverlay.Checked)
                     overlay.Hide();
@@ -914,6 +1076,7 @@ internal sealed class ControlForm : Form
             _session.Failed += OnSessionFailed;
             _session.Stopped += OnSessionStopped;
             _session.SetGamutAnalysis(_showCieAnalysis.Checked);
+            _session.SetAblProfile(activeAblProfile);
             _session.Start();
 
             SetRunningState(true);
@@ -1023,6 +1186,7 @@ internal sealed class ControlForm : Form
         _showPointerLuminance.Enabled = true;
         _falseColor.Enabled = true;
         _showLuminanceMarkers.Enabled = true;
+        UpdateAblControlsState();
         _showCieAnalysis.Enabled = true;
         _mouseThrough.Enabled = !running;
         _moveOutputWindows.Enabled = !running;
@@ -1548,6 +1712,11 @@ internal sealed class ControlForm : Form
     }
 
     private sealed record FrameRateModeChoice(string Code, string DisplayName)
+    {
+        public override string ToString() => DisplayName;
+    }
+
+    private sealed record AblProfileChoice(string Id, string DisplayName)
     {
         public override string ToString() => DisplayName;
     }

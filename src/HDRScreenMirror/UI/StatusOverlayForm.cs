@@ -9,6 +9,7 @@ internal sealed class StatusOverlayForm : Form
     private const int WsExTransparent = 0x00000020;
     private const int WsExToolWindow = 0x00000080;
     private const int WsExNoActivate = 0x08000000;
+    private const int HighDpiLayoutBaseline = 144;
     private const int PanelWidth = 540;
     private const int OuterPadding = 20;
     private const int OuterRadius = 20;
@@ -23,17 +24,20 @@ internal sealed class StatusOverlayForm : Form
 
     private readonly bool _mouseThrough;
     private readonly bool _excludeFromCapture;
+    private readonly Rectangle _outputBounds;
     private readonly string _route;
-    private readonly Font _titleFont = new("Segoe UI", 8.5f, FontStyle.Bold);
-    private readonly Font _stateFont = new("Segoe UI", 8.5f, FontStyle.Bold);
-    private readonly Font _bodyFont = new("Segoe UI", 9f, FontStyle.Regular);
-    private readonly Font _sectionFont = new("Segoe UI", 8.5f, FontStyle.Bold);
-    private readonly Font _captionFont = new("Segoe UI", 8f, FontStyle.Regular);
-    private readonly Font _valueFont = new("Segoe UI", 12f, FontStyle.Bold);
-    private readonly Font _footerFont = new("Segoe UI", 8f, FontStyle.Regular);
+    private Font _titleFont = CreatePixelFont(11.33f, FontStyle.Bold);
+    private Font _stateFont = CreatePixelFont(11.33f, FontStyle.Bold);
+    private Font _bodyFont = CreatePixelFont(12f, FontStyle.Regular);
+    private Font _sectionFont = CreatePixelFont(11.33f, FontStyle.Bold);
+    private Font _captionFont = CreatePixelFont(10.67f, FontStyle.Regular);
+    private Font _valueFont = CreatePixelFont(16f, FontStyle.Bold);
+    private Font _footerFont = CreatePixelFont(10.67f, FontStyle.Regular);
 
     private bool _showPointerLuminance;
     private bool _falseColor;
+    private bool _showAblEstimate;
+    private string _ablProfileName = string.Empty;
     private bool _hasTelemetry;
     private string _state = string.Empty;
     private string _inputFormat = string.Empty;
@@ -43,6 +47,7 @@ internal sealed class StatusOverlayForm : Form
     private double _framesPerSecond;
     private bool _cursorVisible;
     private LuminanceTelemetry? _luminance;
+    private float _dpiScale = 1f;
 
     public StatusOverlayForm(
         Rectangle outputBounds,
@@ -55,6 +60,7 @@ internal sealed class StatusOverlayForm : Form
     {
         _mouseThrough = mouseThrough;
         _excludeFromCapture = excludeFromCapture;
+        _outputBounds = outputBounds;
         _showPointerLuminance = showPointerLuminance;
         _falseColor = falseColor;
         _route = $"{capture.DeviceName}  →  {present.DeviceName}";
@@ -62,6 +68,7 @@ internal sealed class StatusOverlayForm : Form
         Text = "HDRScreenMirror Status";
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
+        AutoScaleMode = AutoScaleMode.None;
         Bounds = new Rectangle(outputBounds.Left + 24, outputBounds.Top + 24, PanelWidth, CalculatePanelHeight());
         TopMost = true;
         ShowInTaskbar = false;
@@ -122,13 +129,31 @@ internal sealed class StatusOverlayForm : Form
         ResizeForContent();
     }
 
+    public void SetAblEstimate(bool enabled, string profileName)
+    {
+        bool visibilityChanged = _showAblEstimate != enabled;
+        _showAblEstimate = enabled;
+        _ablProfileName = profileName;
+        if (visibilityChanged)
+            ResizeForContent();
+        else
+            Invalidate();
+    }
+
     public void ApplyLanguage() => Invalidate();
 
     protected override void OnShown(EventArgs eventArgs)
     {
         base.OnShown(eventArgs);
+        ApplyDpi(DeviceDpi);
         SetCaptureExclusion(true);
         BringToFront();
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs eventArgs)
+    {
+        base.OnDpiChanged(eventArgs);
+        ApplyDpi(eventArgs.DeviceDpiNew);
     }
 
     internal void SetCaptureExclusion(bool excluded)
@@ -159,15 +184,19 @@ internal sealed class StatusOverlayForm : Form
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
         graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        GraphicsState scaleState = graphics.Save();
+        graphics.ScaleTransform(_dpiScale, _dpiScale);
 
         DrawHeader(graphics);
         DrawSignalSummary(graphics);
         DrawLuminanceSection(graphics);
         DrawFooter(graphics);
 
-        using GraphicsPath outlinePath = CreateRoundedRectangle(ClientRectangle, OuterRadius);
+        Rectangle designBounds = new(0, 0, PanelWidth, CalculatePanelHeight());
+        using GraphicsPath outlinePath = CreateRoundedRectangle(designBounds, OuterRadius);
         using Pen outline = new(Color.FromArgb(22, 255, 255, 255), 1);
         graphics.DrawPath(outline, outlinePath);
+        graphics.Restore(scaleState);
     }
 
     private void DrawHeader(Graphics graphics)
@@ -240,19 +269,90 @@ internal sealed class StatusOverlayForm : Form
             minimum);
 
         int nextY = 202;
+        if (_showAblEstimate)
+            nextY = DrawAblSection(graphics, nextY);
+
         if (_showPointerLuminance)
         {
-            DrawPointerCard(graphics, new Rectangle(OuterPadding, nextY, PanelWidth - OuterPadding * 2, 40));
-            nextY += 50;
+            int pointerCardHeight = _showAblEstimate ? 62 : 40;
+            DrawPointerCard(
+                graphics,
+                new Rectangle(OuterPadding, nextY, PanelWidth - OuterPadding * 2, pointerCardHeight));
+            nextY += pointerCardHeight + 10;
         }
 
         if (_falseColor)
             DrawFalseColorLegend(graphics, nextY);
     }
 
-    private void DrawMetricCard(Graphics graphics, Rectangle bounds, string captionKey, double value)
+    private int DrawAblSection(Graphics graphics, int y)
     {
-        DrawRoundedFill(graphics, bounds, InnerRadius, RaisedSurfaceColor);
+        using SolidBrush sectionBrush = new(SecondaryTextColor);
+        using SolidBrush profileBrush = new(MutedTextColor);
+        graphics.DrawString(Localization.T("OverlayAblTitle"), _sectionFont, sectionBrush, OuterPadding, y);
+        using StringFormat profileFormat = new()
+        {
+            Alignment = StringAlignment.Far,
+            LineAlignment = StringAlignment.Near,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap
+        };
+        Rectangle profileBounds = new(PanelWidth / 2, y, PanelWidth / 2 - OuterPadding, 20);
+        graphics.DrawString(_ablProfileName, _captionFont, profileBrush, profileBounds, profileFormat);
+
+        AblLuminanceEstimate? estimate = _luminance?.AblEstimate;
+        double average = estimate?.AverageNits ?? 0;
+        double maximum = estimate?.MaximumNits ?? 0;
+        double minimum = estimate?.MinimumNits ?? 0;
+        const int gap = 8;
+        int cardWidth = (PanelWidth - OuterPadding * 2 - gap * 2) / 3;
+        int cardY = y + 23;
+        DrawMetricCard(
+            graphics,
+            new Rectangle(OuterPadding, cardY, cardWidth, 54),
+            "OverlayAverage",
+            average,
+            Color.FromArgb(24, 34, 50));
+        DrawMetricCard(
+            graphics,
+            new Rectangle(OuterPadding + cardWidth + gap, cardY, cardWidth, 54),
+            "OverlayMaximum",
+            maximum,
+            Color.FromArgb(24, 34, 50));
+        DrawMetricCard(
+            graphics,
+            new Rectangle(OuterPadding + (cardWidth + gap) * 2, cardY, cardWidth, 54),
+            "OverlayMinimum",
+            minimum,
+            Color.FromArgb(24, 34, 50));
+
+        Rectangle summaryBounds = new(OuterPadding, cardY + 64, PanelWidth - OuterPadding * 2, 36);
+        DrawRoundedFill(graphics, summaryBounds, InnerRadius, Color.FromArgb(22, 36, 48, 70));
+        double scalePercent = (estimate?.ScaleFactor ?? 0) * 100.0;
+        string summary = Localization.F(
+            "OverlayAblSummary",
+            estimate?.EquivalentAplPercent ?? 0,
+            scalePercent,
+            100.0 - scalePercent);
+        using SolidBrush summaryBrush = new(AccentColor);
+        using StringFormat centered = new()
+        {
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center,
+            FormatFlags = StringFormatFlags.NoWrap
+        };
+        graphics.DrawString(summary, _captionFont, summaryBrush, summaryBounds, centered);
+        return y + 133;
+    }
+
+    private void DrawMetricCard(
+        Graphics graphics,
+        Rectangle bounds,
+        string captionKey,
+        double value,
+        Color? background = null)
+    {
+        DrawRoundedFill(graphics, bounds, InnerRadius, background ?? RaisedSurfaceColor);
         using Pen outline = new(Color.FromArgb(12, 255, 255, 255), 1);
         using GraphicsPath path = CreateRoundedRectangle(bounds, InnerRadius);
         graphics.DrawPath(outline, path);
@@ -263,7 +363,8 @@ internal sealed class StatusOverlayForm : Form
         graphics.DrawString(Localization.T(captionKey), _captionFont, captionBrush, bounds, centered);
 
         Rectangle valueBounds = new(bounds.Left, bounds.Top + 18, bounds.Width, 29);
-        graphics.DrawString($"{value:F1} nits", _valueFont, valueBrush, valueBounds, centered);
+        string formattedValue = value is > 0 and < 1 ? $"{value:F3}" : $"{value:F1}";
+        graphics.DrawString($"{formattedValue} nits", _valueFont, valueBrush, valueBounds, centered);
     }
 
     private void DrawPointerCard(Graphics graphics, Rectangle bounds)
@@ -271,18 +372,58 @@ internal sealed class StatusOverlayForm : Form
         DrawRoundedFill(graphics, bounds, InnerRadius, Color.FromArgb(22, 36, 48, 70));
         using SolidBrush titleBrush = new(SecondaryTextColor);
         using SolidBrush valueBrush = new(PrimaryTextColor);
-        graphics.DrawString(Localization.T("OverlayPointerTitle"), _bodyFont, titleBrush, bounds.Left + 12, bounds.Top + 10);
+        float titleY = bounds.Top + (bounds.Height - _bodyFont.Height) * 0.5f;
+        graphics.DrawString(Localization.T("OverlayPointerTitle"), _bodyFont, titleBrush, bounds.Left + 12, titleY);
 
-        string value = _luminance is null || !_luminance.PointerInCaptureArea
-            ? Localization.T("OverlayPointerOutsideShort")
-            : $"{_luminance.PointerRegionNits:F3} nits";
         using StringFormat rightAligned = new()
         {
             Alignment = StringAlignment.Far,
             LineAlignment = StringAlignment.Center
         };
         Rectangle valueBounds = new(bounds.Left + bounds.Width / 2, bounds.Top, bounds.Width / 2 - 12, bounds.Height);
-        graphics.DrawString(value, _bodyFont, valueBrush, valueBounds, rightAligned);
+        if (_luminance is null || !_luminance.PointerInCaptureArea)
+        {
+            graphics.DrawString(
+                Localization.T("OverlayPointerOutsideShort"),
+                _bodyFont,
+                valueBrush,
+                valueBounds,
+                rightAligned);
+            return;
+        }
+
+        if (_luminance.PointerScaledNits is not double scaledNits)
+        {
+            graphics.DrawString(
+                $"{_luminance.PointerRegionNits:F3} nits",
+                _bodyFont,
+                valueBrush,
+                valueBounds,
+                rightAligned);
+            return;
+        }
+
+        using SolidBrush scaledBrush = new(AccentColor);
+        using StringFormat lineFormat = new()
+        {
+            Alignment = StringAlignment.Far,
+            LineAlignment = StringAlignment.Near,
+            FormatFlags = StringFormatFlags.NoWrap
+        };
+        Rectangle originalBounds = new(valueBounds.Left, bounds.Top + 5, valueBounds.Width, 24);
+        Rectangle scaledBounds = new(valueBounds.Left, bounds.Top + 33, valueBounds.Width, 24);
+        graphics.DrawString(
+            Localization.F("OverlayPointerOriginal", _luminance.PointerRegionNits),
+            _bodyFont,
+            valueBrush,
+            originalBounds,
+            lineFormat);
+        graphics.DrawString(
+            Localization.F("OverlayPointerScaled", scaledNits),
+            _bodyFont,
+            scaledBrush,
+            scaledBounds,
+            lineFormat);
     }
 
     private void DrawFalseColorLegend(Graphics graphics, int y)
@@ -365,8 +506,10 @@ internal sealed class StatusOverlayForm : Form
     private int CalculatePanelHeight()
     {
         int height = 245;
+        if (_showAblEstimate)
+            height += 133;
         if (_showPointerLuminance)
-            height += 50;
+            height += _showAblEstimate ? 72 : 50;
         if (_falseColor)
             height += 68;
         return height;
@@ -374,20 +517,59 @@ internal sealed class StatusOverlayForm : Form
 
     private void ResizeForContent()
     {
-        Height = CalculatePanelHeight();
+        Height = ScaleToDevice(CalculatePanelHeight());
         UpdateRoundedRegion();
         Invalidate();
     }
+
+    private void ApplyDpi(int dpi)
+    {
+        float newScale = Math.Max(1f, dpi / (float)HighDpiLayoutBaseline);
+        _dpiScale = newScale;
+        RecreateFonts(dpi);
+        Bounds = new Rectangle(
+            _outputBounds.Left + ScaleToDevice(24),
+            _outputBounds.Top + ScaleToDevice(24),
+            ScaleToDevice(PanelWidth),
+            ScaleToDevice(CalculatePanelHeight()));
+        UpdateRoundedRegion();
+        Invalidate();
+    }
+
+    private void RecreateFonts(int dpi)
+    {
+        float pixelScale = dpi / 96f / _dpiScale;
+        ReplaceFont(ref _titleFont, 11.33f * pixelScale, FontStyle.Bold);
+        ReplaceFont(ref _stateFont, 11.33f * pixelScale, FontStyle.Bold);
+        ReplaceFont(ref _bodyFont, 12f * pixelScale, FontStyle.Regular);
+        ReplaceFont(ref _sectionFont, 11.33f * pixelScale, FontStyle.Bold);
+        ReplaceFont(ref _captionFont, 10.67f * pixelScale, FontStyle.Regular);
+        ReplaceFont(ref _valueFont, 16f * pixelScale, FontStyle.Bold);
+        ReplaceFont(ref _footerFont, 10.67f * pixelScale, FontStyle.Regular);
+    }
+
+    private static void ReplaceFont(ref Font font, float size, FontStyle style)
+    {
+        Font oldFont = font;
+        font = CreatePixelFont(size, style);
+        oldFont.Dispose();
+    }
+
+    private int ScaleToDevice(int logicalPixels) =>
+        Math.Max(1, (int)Math.Round(logicalPixels * _dpiScale));
 
     private void UpdateRoundedRegion()
     {
         if (ClientRectangle.Width <= 0 || ClientRectangle.Height <= 0)
             return;
 
-        using GraphicsPath path = CreateRoundedRectangle(ClientRectangle, OuterRadius);
+        using GraphicsPath path = CreateRoundedRectangle(ClientRectangle, ScaleToDevice(OuterRadius));
         Region?.Dispose();
         Region = new Region(path);
     }
+
+    private static Font CreatePixelFont(float size, FontStyle style) =>
+        new("Segoe UI", size, style, GraphicsUnit.Pixel);
 
     private static void DrawRoundedFill(Graphics graphics, Rectangle bounds, int radius, Color color)
     {

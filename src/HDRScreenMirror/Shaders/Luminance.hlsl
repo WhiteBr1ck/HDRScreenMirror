@@ -10,6 +10,11 @@ cbuffer MirrorConstants : register(b0)
     uint FrameHeight;
     int PointerX;
     int PointerY;
+    float AblReferencePeakNits;
+    uint AblCustomEotfEnabled;
+    float AblClipPq;
+    float AblPadding;
+    float4 AblEotfLut[16];
 };
 
 Texture2D<float4> SourceTexture : register(t0);
@@ -24,6 +29,10 @@ struct LuminanceStats
     uint MinimumY;
     uint MaximumX;
     uint MaximumY;
+    float ClippedSum;
+    float ClippedMinimum;
+    float ClippedMaximum;
+    uint ClippedPadding;
 };
 
 RWStructuredBuffer<LuminanceStats> Results : register(u0);
@@ -36,8 +45,45 @@ groupshared uint SharedMinimumX[256];
 groupshared uint SharedMinimumY[256];
 groupshared uint SharedMaximumX[256];
 groupshared uint SharedMaximumY[256];
+groupshared float SharedClippedSum[256];
+groupshared float SharedClippedMinimum[256];
+groupshared float SharedClippedMaximum[256];
 groupshared float SharedLuminanceTile[400];
 groupshared uint SharedValidityTile[400];
+
+float PqOetfFromNits(float luminanceNits)
+{
+    const float m1 = 2610.0 / 16384.0;
+    const float m2 = 2523.0 / 32.0;
+    const float c1 = 3424.0 / 4096.0;
+    const float c2 = 2413.0 / 128.0;
+    const float c3 = 2392.0 / 128.0;
+    float normalized = saturate(max(luminanceNits, 0.0) / 10000.0);
+    float power = pow(normalized, m1);
+    return pow((c1 + c2 * power) / (1.0 + c3 * power), m2);
+}
+
+float LoadAblEotfLut(uint index)
+{
+    return AblEotfLut[index >> 2][index & 3];
+}
+
+float ApplyAblEotf(float luminanceNits)
+{
+    if (AblCustomEotfEnabled == 0)
+        return min(max(luminanceNits, 0.0), max(AblReferencePeakNits, 0.001));
+    if (luminanceNits <= 0.0)
+        return LoadAblEotfLut(0);
+
+    float pq = PqOetfFromNits(luminanceNits);
+    if (pq >= saturate(AblClipPq))
+        return max(AblReferencePeakNits, 0.001);
+    float position = pq * 63.0;
+    uint lowerIndex = min((uint)floor(position), 62u);
+    uint upperIndex = lowerIndex + 1;
+    float amount = position - lowerIndex;
+    return lerp(LoadAblEotfLut(lowerIndex), LoadAblEotfLut(upperIndex), amount);
+}
 
 [numthreads(16, 16, 1)]
 void CSFrameStats(
@@ -69,10 +115,13 @@ void CSFrameStats(
     bool valid = dispatchThreadId.x < FrameWidth && dispatchThreadId.y < FrameHeight;
     uint centerIndex = (groupThreadId.y + 2) * 20 + groupThreadId.x + 2;
     float luminance = valid ? SharedLuminanceTile[centerIndex] : 0.0;
+    float clippedLuminance = ApplyAblEotf(luminance);
     float regionAverage = 0.0;
+    float clippedRegionAverage = 0.0;
     if (valid)
     {
         float regionSum = 0.0;
+        float clippedRegionSum = 0.0;
         uint regionCount = 0;
         for (uint y = 0; y < 5; y++)
         {
@@ -80,10 +129,12 @@ void CSFrameStats(
             {
                 uint tileIndex = (groupThreadId.y + y) * 20 + groupThreadId.x + x;
                 regionSum += SharedLuminanceTile[tileIndex];
+                clippedRegionSum += ApplyAblEotf(SharedLuminanceTile[tileIndex]);
                 regionCount += SharedValidityTile[tileIndex];
             }
         }
         regionAverage = regionCount > 0 ? regionSum / regionCount : 0.0;
+        clippedRegionAverage = regionCount > 0 ? clippedRegionSum / regionCount : 0.0;
     }
 
     SharedSum[groupIndex] = valid ? luminance : 0.0;
@@ -94,6 +145,9 @@ void CSFrameStats(
     SharedMinimumY[groupIndex] = dispatchThreadId.y;
     SharedMaximumX[groupIndex] = dispatchThreadId.x;
     SharedMaximumY[groupIndex] = dispatchThreadId.y;
+    SharedClippedSum[groupIndex] = valid ? clippedLuminance : 0.0;
+    SharedClippedMinimum[groupIndex] = valid ? clippedRegionAverage : 3.402823466e+38;
+    SharedClippedMaximum[groupIndex] = valid ? clippedRegionAverage : 0.0;
     GroupMemoryBarrierWithGroupSync();
 
     for (uint stride = 128; stride > 0; stride >>= 1)
@@ -114,6 +168,13 @@ void CSFrameStats(
                 SharedMaximumY[groupIndex] = SharedMaximumY[groupIndex + stride];
             }
             SharedCount[groupIndex] += SharedCount[groupIndex + stride];
+            SharedClippedSum[groupIndex] += SharedClippedSum[groupIndex + stride];
+            SharedClippedMinimum[groupIndex] = min(
+                SharedClippedMinimum[groupIndex],
+                SharedClippedMinimum[groupIndex + stride]);
+            SharedClippedMaximum[groupIndex] = max(
+                SharedClippedMaximum[groupIndex],
+                SharedClippedMaximum[groupIndex + stride]);
         }
         GroupMemoryBarrierWithGroupSync();
     }
@@ -131,6 +192,10 @@ void CSFrameStats(
         result.MinimumY = SharedMinimumY[0];
         result.MaximumX = SharedMaximumX[0];
         result.MaximumY = SharedMaximumY[0];
+        result.ClippedSum = SharedClippedSum[0];
+        result.ClippedMinimum = SharedClippedMinimum[0];
+        result.ClippedMaximum = SharedClippedMaximum[0];
+        result.ClippedPadding = 0;
         Results[resultIndex] = result;
     }
 }
@@ -147,6 +212,10 @@ void CSPointerProbe(uint3 dispatchThreadId : SV_DispatchThreadID)
     result.MinimumY = 0;
     result.MaximumX = 0;
     result.MaximumY = 0;
+    result.ClippedSum = 0.0;
+    result.ClippedMinimum = 3.402823466e+38;
+    result.ClippedMaximum = 0.0;
+    result.ClippedPadding = 0;
 
     for (int y = -2; y <= 2; y++)
     {
@@ -164,6 +233,10 @@ void CSPointerProbe(uint3 dispatchThreadId : SV_DispatchThreadID)
             result.Sum += luminance;
             result.Minimum = min(result.Minimum, luminance);
             result.Maximum = max(result.Maximum, luminance);
+            float clippedLuminance = ApplyAblEotf(luminance);
+            result.ClippedSum += clippedLuminance;
+            result.ClippedMinimum = min(result.ClippedMinimum, clippedLuminance);
+            result.ClippedMaximum = max(result.ClippedMaximum, clippedLuminance);
             result.Count++;
         }
     }

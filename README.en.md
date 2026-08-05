@@ -24,6 +24,10 @@ It now includes a complete suite of HDR analysis tools.
 
 ![HDRScreenMirror main window](docs/images/main-window.png)
 
+### ABL luminance configuration
+
+![HDRScreenMirror ABL luminance configuration](docs/images/abl-configuration.png)
+
 ### HDR analysis tools
 
 ![HDRScreenMirror HDR analysis tools](docs/images/hdr-analysis.png)
@@ -41,6 +45,7 @@ It now includes a complete suite of HDR analysis tools.
 9. HDR gamut analysis tools.
 10. Three frame rate policies: follow the output display, fixed limit, and unlimited.
 11. Automatic mirror recovery and layout adaptation after Windows resolution or display mode changes.
+12. OLED ABL luminance estimation from user supplied window luminance measurements, including estimated average, maximum, and minimum frame luminance after ABL.
 
 ## Requirements
 
@@ -57,6 +62,8 @@ It now includes a complete suite of HDR analysis tools.
 3. Run `HDRScreenMirror.exe`.
 
 No installer is required. Delete the extracted directory to remove the application.
+
+Application settings and ABL profiles are stored in `settings.json` beside the executable.
 
 ## How to use it
 
@@ -87,6 +94,7 @@ For example, if three displays are connected to one GPU, HDRScreenMirror can cap
 | Show cursor area luminance | Enabled | Shows the average luminance of the area under the cursor to three decimal places; reports when the cursor is outside the capture area |
 | Output luminance false color | Disabled | Switches every output display to the same luminance false color view and shows its scale in the status panel |
 | Mark highest and lowest luminance | Disabled | Marks the highest and lowest average luminance locations on the output image and shows their values |
+| Show ABL estimated luminance | Disabled | Estimates average, maximum, and minimum frame luminance after OLED ABL using the selected profile, and shows equivalent APL, overall scale, and luminance reduction |
 | Output CIE 1976 gamut diagram | Disabled | Shows the current frame `u′v′` heatmap, three reference gamut triangles, and mutually exclusive gamut percentages in the bottom left corner |
 | Click through mirror | Disabled | Lets mouse clicks reach the desktop behind the mirror window |
 | Enable global hotkeys | Enabled | Registers shortcuts for start or stop, false color, screenshots, the status panel, and control panel recall |
@@ -108,6 +116,18 @@ Stop mirroring before changing the frame rate policy. If the Windows resolution 
 ### CIE 1976 gamut analysis
 
 Shows the percentage of current frame elements that fall within each gamut range.
+
+### OLED ABL luminance estimation
+
+Open “Manage profiles” to save window luminance measurements for one or more OLED displays. Every profile requires peak luminance at 1% and 100% APL. Optional measurements are available at 3%, 5%, 10%, 20%, 25%, 50%, and 75%. Missing points are interpolated piecewise on a logarithmic APL axis.
+
+When “Show ABL estimated luminance” is enabled, source signal luminance is first clipped to the 1% APL peak. The base frame average determines the equivalent APL, then the entire frame is scaled by the ratio between the interpolated peak at that APL and the 1% peak. The status panel shows:
+
+1. Estimated average, maximum, and minimum frame luminance after ABL.
+2. The equivalent APL of the current frame.
+3. The overall scale and luminance reduction produced by the selected profile.
+
+Profiles can be created, duplicated, renamed, deleted, and saved. The active profile and ABL estimation can be changed while mirroring without stopping the session. All output displays use the same active profile.
 
 ### Luminance false color scale
 
@@ -175,11 +195,13 @@ Press `Ctrl + F12`. If tray mode is enabled, you can also double click the tray 
 
 ### 1.5.0
 
-1. Added follow output display, fixed limit, and unlimited frame rate policies, with follow output display as the default.
-2. Added a persistent fixed frame rate limit from 24 to 500 fps.
-3. Fixed image cropping when capture and output displays use different Windows resolutions or DPI scaling values.
-4. Added display mode change detection during mirroring, with automatic output adaptation and mirror recovery after a resolution change.
-5. Improved the default control panel size and option layout to prevent clipped descriptions and controls.
+1. Added ABL simulation using user supplied OLED HDR window luminance measurements and an editable EOTF curve to estimate physical display luminance.
+2. Added follow output display, fixed limit, and unlimited frame rate policies, with follow output display as the default.
+3. Added a persistent fixed frame rate limit from 24 to 500 fps.
+4. Fixed image cropping when capture and output displays use different Windows resolutions or DPI scaling values.
+5. Added display mode change detection during mirroring, with automatic output adaptation and mirror recovery after a resolution change.
+6. Improved the default control panel size and option layout to prevent clipped descriptions and controls.
+7. Moved application settings to `settings.json` beside the executable. Settings from `%LocalAppData%\HDRScreenMirror\settings.json` are not migrated automatically. To keep them, copy that file into the application directory before launching the new version for the first time.
 
 ### 1.4.1
 
