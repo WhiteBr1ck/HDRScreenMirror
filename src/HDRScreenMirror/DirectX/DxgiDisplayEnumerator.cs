@@ -1,4 +1,5 @@
 using System.Drawing;
+using HDRScreenMirror.Interop;
 using Vortice.DXGI;
 using static Vortice.DXGI.DXGI;
 
@@ -9,6 +10,8 @@ internal static class DxgiDisplayEnumerator
     public static IReadOnlyList<DisplayTarget> GetDisplays()
     {
         List<DisplayTarget> displays = [];
+        IReadOnlyDictionary<string, DisplayIdentity> displayIdentities =
+            DisplayIdentityResolver.GetActiveDisplays();
         using IDXGIFactory2 factory = CreateDXGIFactory1<IDXGIFactory2>();
 
         int globalIndex = 0;
@@ -52,12 +55,23 @@ internal static class DxgiDisplayEnumerator
                             maxFullFrameLuminance = description1.MaxFullFrameLuminance;
                         }
 
+                        string deviceName = description.DeviceName.TrimEnd('\0');
+                        DisplayIdentity identity = displayIdentities.TryGetValue(deviceName, out DisplayIdentity? resolved)
+                            ? resolved
+                            : new DisplayIdentity(
+                                deviceName.StartsWith(@"\\.\", StringComparison.Ordinal)
+                                    ? deviceName[4..]
+                                    : deviceName,
+                                deviceName);
+
                         displays.Add(new DisplayTarget(
                             globalIndex++,
                             (int)adapterIndex,
                             (int)outputIndex,
                             adapterName,
-                            description.DeviceName.TrimEnd('\0'),
+                            deviceName,
+                            identity.FriendlyName,
+                            identity.StableId,
                             bounds,
                             description.Rotation,
                             description.AttachedToDesktop,

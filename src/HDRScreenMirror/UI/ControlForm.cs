@@ -139,10 +139,11 @@ internal sealed class ControlForm : Form
     private bool _updatingScreenshotSelection;
     private bool _updatingFrameRateSelection;
     private bool _updatingAblProfileSelection;
+    private bool _updatingDisplaySelection;
     private bool _takingScreenshot;
     private bool _restartMirrorAfterDisplayChange;
-    private string? _displayChangeCaptureDevice;
-    private string? _displayChangePresentDevice;
+    private string? _displayChangeCaptureId;
+    private string? _displayChangePresentId;
 
     public ControlForm(AppSettings settings)
     {
@@ -185,6 +186,8 @@ internal sealed class ControlForm : Form
         ApplyLanguage();
 
         _refreshButton.Click += (_, _) => RefreshDisplays();
+        _captureCombo.SelectedIndexChanged += (_, _) => SaveDisplaySelection(capture: true);
+        _presentCombo.SelectedIndexChanged += (_, _) => SaveDisplaySelection(capture: false);
         _resetPaperWhiteButton.Click += (_, _) => _paperWhite.Value = DefaultPaperWhiteNits;
         _startButton.Click += (_, _) => StartMirror();
         _stopButton.Click += (_, _) => StopMirror();
@@ -818,27 +821,36 @@ internal sealed class ControlForm : Form
 
     private void RefreshDisplayLabels()
     {
-        int? captureIndex = (_captureCombo.SelectedItem as DisplayTarget)?.GlobalIndex;
-        int? presentIndex = (_presentCombo.SelectedItem as DisplayTarget)?.GlobalIndex;
-        _captureCombo.DataSource = _displays.ToArray();
-        _presentCombo.DataSource = _displays.ToArray();
-        SelectDisplay(_captureCombo, captureIndex);
-        SelectDisplay(_presentCombo, presentIndex);
+        string? captureId = (_captureCombo.SelectedItem as DisplayTarget)?.StableId;
+        string? presentId = (_presentCombo.SelectedItem as DisplayTarget)?.StableId;
+        _updatingDisplaySelection = true;
+        try
+        {
+            _captureCombo.DataSource = _displays.ToArray();
+            _presentCombo.DataSource = _displays.ToArray();
+            SelectDisplay(_captureCombo, captureId);
+            SelectDisplay(_presentCombo, presentId);
+        }
+        finally
+        {
+            _updatingDisplaySelection = false;
+        }
     }
 
-    private static void SelectDisplay(ComboBox comboBox, int? globalIndex)
+    private void SaveDisplaySelection(bool capture)
     {
-        if (globalIndex is null)
+        if (_updatingDisplaySelection)
             return;
 
-        for (int i = 0; i < comboBox.Items.Count; i++)
-        {
-            if (comboBox.Items[i] is DisplayTarget display && display.GlobalIndex == globalIndex)
-            {
-                comboBox.SelectedIndex = i;
-                return;
-            }
-        }
+        ComboBox comboBox = capture ? _captureCombo : _presentCombo;
+        if (comboBox.SelectedItem is not DisplayTarget display)
+            return;
+
+        if (capture)
+            _settings.CaptureDisplayId = display.StableId;
+        else
+            _settings.OutputDisplayId = display.StableId;
+        _settings.Save();
     }
 
     private static void ApplyLocalizedControlText(Control parent)
@@ -889,33 +901,43 @@ internal sealed class ControlForm : Form
     }
 
     private bool RefreshDisplays(
-        string? captureDeviceName = null,
-        string? presentDeviceName = null)
+        string? captureDisplayId = null,
+        string? presentDisplayId = null)
     {
         if (_session is not null)
             return false;
 
-        captureDeviceName ??= (_captureCombo.SelectedItem as DisplayTarget)?.DeviceName;
-        presentDeviceName ??= (_presentCombo.SelectedItem as DisplayTarget)?.DeviceName;
+        captureDisplayId ??= _settings.CaptureDisplayId;
+        presentDisplayId ??= _settings.OutputDisplayId;
 
         try
         {
             _hasEnumeratedDisplays = true;
             _displays = DxgiDisplayEnumerator.GetDisplays().Where(x => x.AttachedToDesktop).ToArray();
-            _captureCombo.DataSource = _displays.ToArray();
-            _presentCombo.DataSource = _displays.ToArray();
-
-            if (_displays.Count == 0)
+            _updatingDisplaySelection = true;
+            try
             {
-                _statusLabel.Text = Localization.T("StatusNoDisplays");
-                _startButton.Enabled = false;
-                return false;
+                _captureCombo.DataSource = _displays.ToArray();
+                _presentCombo.DataSource = _displays.ToArray();
+
+                if (_displays.Count == 0)
+                {
+                    _statusLabel.Text = Localization.T("StatusNoDisplays");
+                    _startButton.Enabled = false;
+                    return false;
+                }
+
+                if (!SelectDisplay(_captureCombo, captureDisplayId))
+                    _captureCombo.SelectedIndex = 0;
+                if (!SelectDisplay(_presentCombo, presentDisplayId))
+                    _presentCombo.SelectedIndex = FindDefaultPresentIndex();
+            }
+            finally
+            {
+                _updatingDisplaySelection = false;
             }
 
-            if (!SelectDisplay(_captureCombo, captureDeviceName))
-                _captureCombo.SelectedIndex = 0;
-            if (!SelectDisplay(_presentCombo, presentDeviceName))
-                _presentCombo.SelectedIndex = FindDefaultPresentIndex();
+            SaveInitialDisplaySelection();
             _startButton.Enabled = _displays.Count > 1;
             _statusLabel.Text = Localization.F("StatusFoundDisplays", _displays.Count);
             UpdatePresentSelectorState();
@@ -934,15 +956,16 @@ internal sealed class ControlForm : Form
         }
     }
 
-    private static bool SelectDisplay(ComboBox comboBox, string? deviceName)
+    private static bool SelectDisplay(ComboBox comboBox, string? displayId)
     {
-        if (string.IsNullOrWhiteSpace(deviceName))
+        if (string.IsNullOrWhiteSpace(displayId))
             return false;
 
         for (int i = 0; i < comboBox.Items.Count; i++)
         {
             if (comboBox.Items[i] is DisplayTarget display &&
-                string.Equals(display.DeviceName, deviceName, StringComparison.OrdinalIgnoreCase))
+                (string.Equals(display.StableId, displayId, StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(display.DeviceName, displayId, StringComparison.OrdinalIgnoreCase)))
             {
                 comboBox.SelectedIndex = i;
                 return true;
@@ -950,6 +973,30 @@ internal sealed class ControlForm : Form
         }
 
         return false;
+    }
+
+    private void SaveInitialDisplaySelection()
+    {
+        bool changed = false;
+        if (string.IsNullOrWhiteSpace(_settings.CaptureDisplayId) &&
+            _captureCombo.SelectedItem is DisplayTarget capture)
+        {
+            _settings.CaptureDisplayId = capture.StableId;
+            changed = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(_settings.OutputDisplayId) &&
+            _displays.Count > 1 &&
+            _presentCombo.SelectedItem is DisplayTarget present &&
+            _captureCombo.SelectedItem is DisplayTarget selectedCapture &&
+            !string.Equals(present.StableId, selectedCapture.StableId, StringComparison.OrdinalIgnoreCase))
+        {
+            _settings.OutputDisplayId = present.StableId;
+            changed = true;
+        }
+
+        if (changed)
+            _settings.Save();
     }
 
     private int FindDefaultPresentIndex()
@@ -981,9 +1028,9 @@ internal sealed class ControlForm : Form
 
         if (refreshDisplayState)
         {
-            string? captureDeviceName = (_captureCombo.SelectedItem as DisplayTarget)?.DeviceName;
-            string? presentDeviceName = (_presentCombo.SelectedItem as DisplayTarget)?.DeviceName;
-            if (!RefreshDisplays(captureDeviceName, presentDeviceName))
+            string? captureDisplayId = (_captureCombo.SelectedItem as DisplayTarget)?.StableId;
+            string? presentDisplayId = (_presentCombo.SelectedItem as DisplayTarget)?.StableId;
+            if (!RefreshDisplays(captureDisplayId, presentDisplayId))
                 return;
         }
 
@@ -1622,11 +1669,15 @@ internal sealed class ControlForm : Form
 
     private void ScheduleDisplayChange()
     {
-        if (!_restartMirrorAfterDisplayChange)
+        if (!_displayChangeTimer.Enabled)
         {
             _restartMirrorAfterDisplayChange = _session is not null;
-            _displayChangeCaptureDevice = (_captureCombo.SelectedItem as DisplayTarget)?.DeviceName;
-            _displayChangePresentDevice = (_presentCombo.SelectedItem as DisplayTarget)?.DeviceName;
+            _displayChangeCaptureId = _restartMirrorAfterDisplayChange
+                ? (_captureCombo.SelectedItem as DisplayTarget)?.StableId
+                : null;
+            _displayChangePresentId = _restartMirrorAfterDisplayChange
+                ? (_presentCombo.SelectedItem as DisplayTarget)?.StableId
+                : null;
         }
 
         _displayChangeTimer.Stop();
@@ -1638,16 +1689,16 @@ internal sealed class ControlForm : Form
         _displayChangeTimer.Stop();
 
         bool restartMirror = _restartMirrorAfterDisplayChange;
-        string? captureDeviceName = _displayChangeCaptureDevice;
-        string? presentDeviceName = _displayChangePresentDevice;
+        string? captureDisplayId = _displayChangeCaptureId;
+        string? presentDisplayId = _displayChangePresentId;
         _restartMirrorAfterDisplayChange = false;
-        _displayChangeCaptureDevice = null;
-        _displayChangePresentDevice = null;
+        _displayChangeCaptureId = null;
+        _displayChangePresentId = null;
 
         if (restartMirror)
             StopMirror();
 
-        if (!RefreshDisplays(captureDeviceName, presentDeviceName))
+        if (!RefreshDisplays(captureDisplayId, presentDisplayId))
             return;
 
         if (restartMirror)

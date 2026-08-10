@@ -25,7 +25,9 @@ internal sealed class AblProfileManagerForm : Form
         BackColor = SubtleSurface,
         Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Regular),
         DrawMode = DrawMode.OwnerDrawFixed,
-        ItemHeight = 42
+        ItemHeight = 42,
+        AllowDrop = true,
+        Cursor = Cursors.Hand
     };
     private readonly TextBox _nameTextBox = new()
     {
@@ -67,6 +69,9 @@ internal sealed class AblProfileManagerForm : Form
     private readonly Button _cancelButton;
     private bool _loading;
     private int _selectedIndex = -1;
+    private Point _profileDragStart;
+    private string? _profileDragProfileId;
+    private int _profileDropIndex = -1;
 
     public AblProfileManagerForm(IEnumerable<AblProfile> profiles, string activeProfileId)
     {
@@ -100,6 +105,12 @@ internal sealed class AblProfileManagerForm : Form
 
         _profileList.SelectedIndexChanged += (_, _) => ChangeSelectedProfile();
         _profileList.DrawItem += DrawProfileListItem;
+        _profileList.MouseDown += BeginProfileDrag;
+        _profileList.MouseMove += ContinueProfileDrag;
+        _profileList.DragEnter += UpdateProfileDrag;
+        _profileList.DragOver += UpdateProfileDrag;
+        _profileList.DragDrop += DropProfile;
+        _profileList.DragLeave += (_, _) => ClearProfileDropIndicator();
         _nameTextBox.TextChanged += (_, _) => ChangeProfileName();
         _measurements.CellValidating += ValidateMeasurementCell;
         _measurements.CellEndEdit += (_, eventArgs) =>
@@ -152,7 +163,7 @@ internal sealed class AblProfileManagerForm : Form
             RowCount = 3,
             BackColor = WindowBackground
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
         root.Controls.Add(BuildHeader(), 0, 0);
@@ -171,14 +182,6 @@ internal sealed class AblProfileManagerForm : Form
             Font = new Font("Microsoft YaHei UI", 17f, FontStyle.Bold),
             ForeColor = PrimaryText,
             Location = new Point(0, 2)
-        });
-        panel.Controls.Add(new Label
-        {
-            Text = Localization.T("AblProfilesSubtitle"),
-            AutoSize = true,
-            Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular),
-            ForeColor = SecondaryText,
-            Location = new Point(2, 43)
         });
         return panel;
     }
@@ -331,11 +334,10 @@ internal sealed class AblProfileManagerForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 3,
             Margin = Padding.Empty
         };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
         layout.Controls.Add(new Label
@@ -346,16 +348,7 @@ internal sealed class AblProfileManagerForm : Form
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = PrimaryText
         }, 0, 0);
-        layout.Controls.Add(new Label
-        {
-            Text = Localization.T("AblEotfHelp"),
-            Dock = DockStyle.Fill,
-            AutoSize = false,
-            Font = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Regular),
-            ForeColor = SecondaryText,
-            Padding = new Padding(0, 2, 0, 6)
-        }, 0, 1);
-        layout.Controls.Add(_eotfEditor, 0, 2);
+        layout.Controls.Add(_eotfEditor, 0, 1);
 
         FlowLayoutPanel actions = new()
         {
@@ -367,7 +360,7 @@ internal sealed class AblProfileManagerForm : Form
         };
         _resetEotfButton.Margin = new Padding(0);
         actions.Controls.Add(_resetEotfButton);
-        layout.Controls.Add(actions, 0, 3);
+        layout.Controls.Add(actions, 0, 2);
 
         _eotfPanel.Controls.Add(layout);
         card.Controls.Add(_eotfPanel);
@@ -380,13 +373,12 @@ internal sealed class AblProfileManagerForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 3,
             Margin = Padding.Empty
         };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
         layout.Controls.Add(new Label
         {
             Text = Localization.T("AblProfileName"),
@@ -396,14 +388,6 @@ internal sealed class AblProfileManagerForm : Form
         }, 0, 0);
         layout.Controls.Add(_nameTextBox, 0, 1);
         layout.Controls.Add(_measurements, 0, 2);
-        layout.Controls.Add(new Label
-        {
-            Text = Localization.T("AblMeasurementsHelp"),
-            Dock = DockStyle.Fill,
-            AutoSize = false,
-            ForeColor = SecondaryText,
-            Padding = new Padding(2, 10, 2, 0)
-        }, 0, 3);
         return layout;
     }
 
@@ -551,7 +535,7 @@ internal sealed class AblProfileManagerForm : Form
         Rectangle textBounds = new(
             eventArgs.Bounds.Left + 14,
             eventArgs.Bounds.Top,
-            eventArgs.Bounds.Width - 22,
+            eventArgs.Bounds.Width - 42,
             eventArgs.Bounds.Height);
         TextRenderer.DrawText(
             eventArgs.Graphics,
@@ -560,6 +544,123 @@ internal sealed class AblProfileManagerForm : Form
             textBounds,
             PrimaryText,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+
+        using Pen gripPen = new(Color.FromArgb(145, 153, 167), 1.5f);
+        int gripX = eventArgs.Bounds.Right - 15;
+        int gripY = eventArgs.Bounds.Top + eventArgs.Bounds.Height / 2;
+        eventArgs.Graphics.DrawLine(gripPen, gripX - 4, gripY - 3, gripX + 2, gripY - 3);
+        eventArgs.Graphics.DrawLine(gripPen, gripX - 4, gripY, gripX + 2, gripY);
+        eventArgs.Graphics.DrawLine(gripPen, gripX - 4, gripY + 3, gripX + 2, gripY + 3);
+
+        if (_profileDropIndex == eventArgs.Index ||
+            (_profileDropIndex == _profileList.Items.Count && eventArgs.Index == _profileList.Items.Count - 1))
+        {
+            int lineY = _profileDropIndex == _profileList.Items.Count
+                ? eventArgs.Bounds.Bottom - 2
+                : eventArgs.Bounds.Top + 1;
+            using Pen dropPen = new(Accent, 2);
+            eventArgs.Graphics.DrawLine(
+                dropPen,
+                eventArgs.Bounds.Left + 8,
+                lineY,
+                eventArgs.Bounds.Right - 8,
+                lineY);
+        }
+    }
+
+    private void BeginProfileDrag(object? sender, MouseEventArgs eventArgs)
+    {
+        if (eventArgs.Button != MouseButtons.Left)
+            return;
+
+        int index = _profileList.IndexFromPoint(eventArgs.Location);
+        _profileDragStart = eventArgs.Location;
+        _profileDragProfileId = index >= 0 && index < _profiles.Count ? _profiles[index].Id : null;
+    }
+
+    private void ContinueProfileDrag(object? sender, MouseEventArgs eventArgs)
+    {
+        if ((eventArgs.Button & MouseButtons.Left) == 0 || string.IsNullOrWhiteSpace(_profileDragProfileId))
+            return;
+
+        Size dragSize = SystemInformation.DragSize;
+        Rectangle dragBounds = new(
+            _profileDragStart.X - dragSize.Width / 2,
+            _profileDragStart.Y - dragSize.Height / 2,
+            dragSize.Width,
+            dragSize.Height);
+        if (dragBounds.Contains(eventArgs.Location))
+            return;
+
+        string profileId = _profileDragProfileId;
+        _profileList.DoDragDrop(new ProfileDragData(profileId), DragDropEffects.Move);
+        _profileDragProfileId = null;
+        ClearProfileDropIndicator();
+    }
+
+    private void UpdateProfileDrag(object? sender, DragEventArgs eventArgs)
+    {
+        if (eventArgs.Data?.GetData(typeof(ProfileDragData)) is not ProfileDragData)
+        {
+            eventArgs.Effect = DragDropEffects.None;
+            ClearProfileDropIndicator();
+            return;
+        }
+
+        eventArgs.Effect = DragDropEffects.Move;
+        Point location = _profileList.PointToClient(new Point(eventArgs.X, eventArgs.Y));
+        int insertionIndex = GetProfileInsertionIndex(location);
+        if (_profileDropIndex != insertionIndex)
+        {
+            _profileDropIndex = insertionIndex;
+            _profileList.Invalidate();
+        }
+    }
+
+    private int GetProfileInsertionIndex(Point location)
+    {
+        int itemIndex = _profileList.IndexFromPoint(location);
+        if (itemIndex < 0)
+            return location.Y <= 0 ? 0 : _profileList.Items.Count;
+
+        Rectangle itemBounds = _profileList.GetItemRectangle(itemIndex);
+        return location.Y >= itemBounds.Top + itemBounds.Height / 2 ? itemIndex + 1 : itemIndex;
+    }
+
+    private void DropProfile(object? sender, DragEventArgs eventArgs)
+    {
+        if (eventArgs.Data?.GetData(typeof(ProfileDragData)) is not ProfileDragData dragData)
+            return;
+
+        int sourceIndex = _profiles.FindIndex(profile =>
+            string.Equals(profile.Id, dragData.ProfileId, StringComparison.Ordinal));
+        int insertionIndex = _profileDropIndex;
+        ClearProfileDropIndicator();
+        if (sourceIndex < 0 || insertionIndex < 0 || insertionIndex > _profiles.Count)
+            return;
+
+        _measurements.EndEdit();
+        if (!StoreEditorValues(false))
+            return;
+
+        int destinationIndex = insertionIndex > sourceIndex ? insertionIndex - 1 : insertionIndex;
+        destinationIndex = Math.Clamp(destinationIndex, 0, _profiles.Count - 1);
+        if (destinationIndex == sourceIndex)
+            return;
+
+        AblProfile profile = _profiles[sourceIndex];
+        _profiles.RemoveAt(sourceIndex);
+        _profiles.Insert(destinationIndex, profile);
+        RefreshProfileList(profile.Id);
+    }
+
+    private void ClearProfileDropIndicator()
+    {
+        if (_profileDropIndex < 0)
+            return;
+
+        _profileDropIndex = -1;
+        _profileList.Invalidate();
     }
 
     private static Button CreateButton(string localizationKey, int width, ButtonTone tone)
@@ -881,6 +982,8 @@ internal sealed class AblProfileManagerForm : Form
         Primary,
         Danger
     }
+
+    private sealed record ProfileDragData(string ProfileId);
 
     private sealed class SurfacePanel : Panel
     {
