@@ -89,7 +89,7 @@ Single display analysis does not create a mirror output window. A system with on
 5. The control panel hides to the tray. Analysis overlays appear on the capture display and are excluded from Desktop Duplication.
 6. Press `Ctrl + F8` to stop analysis or `Ctrl + F12` to recall the control panel.
 
-Single display analysis can cover applications that use normal windowed fullscreen, including MPC BE. It cannot cover exclusive fullscreen applications or applications that use an independent presentation path. Use windowed, maximized, or borderless fullscreen mode in those applications.
+Single display analysis can cover applications that use normal windowed fullscreen. It cannot cover exclusive fullscreen applications or applications that use an independent presentation path.
 
 ### Mirroring to three or more displays
 
@@ -207,9 +207,7 @@ Analysis overlays automatically recover their window level over applications tha
 1. Cross GPU mirroring is not currently supported.
 2. HDR multi display mirroring cannot use the same display for capture and output; HDR single display analysis does not create an output window.
 3. Some MPO surfaces, protected videos, and exclusive fullscreen content may not be available to Desktop Duplication.
-4. When the driver only returns an SDR image, original HDR highlights cannot be reconstructed.
-5. Rare legacy monochrome or XOR cursors may be displayed using approximate colors.
-6. HDR single display analysis overlays cannot cover exclusive fullscreen applications or applications that use an independent presentation path.
+4. HDR single display analysis overlays cannot cover exclusive fullscreen applications or applications that use an independent presentation path.
 
 ## Changelog
 
@@ -217,12 +215,6 @@ Analysis overlays automatically recover their window level over applications tha
 
 1. Added manually selectable HDR multi display mirroring and HDR single display analysis modes.
 2. Added single display analysis without an output display, with the status panel, luminance markers, and real time gamut analysis panel shown on the capture display.
-3. Excluded single display analysis overlays from Desktop Duplication to prevent them from contaminating luminance and gamut statistics.
-4. Added startup validation that requires at least one visible analysis overlay in single display analysis.
-5. Disabled output display, false color, output cursor, and click through controls when single display analysis is selected.
-6. Added the mode selector and refined the control panel layout. Renamed “Output status panel” to “Status panel” and “Refresh displays” to “Rescan displays”.
-7. Improved analysis overlay window level recovery over normal fullscreen applications such as MPC BE.
-8. Documented the limitation for exclusive fullscreen applications and independent presentation paths.
 
 ### 1.6.1
 
