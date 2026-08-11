@@ -12,6 +12,7 @@ internal sealed class AppSettings
     public string ScreenshotDirectory { get; set; } = string.Empty;
     public string FrameRateMode { get; set; } = "output";
     public int FrameRateLimit { get; set; } = 60;
+    public string OperationMode { get; set; } = "mirror";
     public string CaptureDisplayId { get; set; } = string.Empty;
     public string OutputDisplayId { get; set; } = string.Empty;
     public bool AblEstimationEnabled { get; set; }

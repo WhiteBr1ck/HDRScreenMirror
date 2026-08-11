@@ -146,14 +146,15 @@ internal sealed class AnalysisOverlayForm : Form
         BringToFront();
     }
 
-    internal void SetCaptureExclusion(bool excluded)
+    internal bool SetCaptureExclusion(bool excluded)
     {
         if (!_excludeFromCapture || !IsHandleCreated)
-            return;
+            return !excluded;
 
-        NativeMethods.SetWindowDisplayAffinity(
+        bool applied = NativeMethods.SetWindowDisplayAffinity(
             Handle,
             excluded ? NativeMethods.WdaExcludeFromCapture : NativeMethods.WdaNone);
+        return applied;
     }
 
     protected override void OnPaintBackground(PaintEventArgs eventArgs)

@@ -20,6 +20,7 @@ internal sealed class MirrorSession : IDisposable
     private const int GamutSliceCount = 8;
     private const int GamutSliceStride = GamutHistogramCount + GamutCounterCount;
     private const int GamutElementCount = GamutSliceCount * GamutSliceStride;
+    private const int AnalysisOnlyFollowOutputFps = 60;
     private const int ErrorAccessDenied = unchecked((int)0x80070005);
     private const int DxgiErrorAccessLost = unchecked((int)0x887A0026);
     private const int DxgiErrorWaitTimeout = unchecked((int)0x887A0027);
@@ -36,6 +37,7 @@ internal sealed class MirrorSession : IDisposable
 
     private readonly DisplayTarget _capture;
     private readonly IReadOnlyList<MirrorOutputBinding> _outputs;
+    private readonly bool _analysisOnly;
     private readonly float _paperWhiteNits;
     private readonly FrameRateMode _frameRateMode;
     private readonly int _frameRateLimit;
@@ -148,14 +150,16 @@ internal sealed class MirrorSession : IDisposable
         bool falseColor = false,
         bool analyzeLuminance = true)
     {
-        if (outputs.Count == 0)
-            throw new ArgumentException(Localization.T("NeedOutput"), nameof(outputs));
-
         _capture = capture;
         _outputs = outputs;
+        _analysisOnly = outputs.Count == 0;
         _paperWhiteNits = paperWhiteNits;
-        _frameRateMode = frameRateMode;
-        _frameRateLimit = Math.Clamp(frameRateLimit, 24, 500);
+        _frameRateMode = _analysisOnly && frameRateMode == FrameRateMode.FollowOutput
+            ? FrameRateMode.Fixed
+            : frameRateMode;
+        _frameRateLimit = _analysisOnly && frameRateMode == FrameRateMode.FollowOutput
+            ? AnalysisOnlyFollowOutputFps
+            : Math.Clamp(frameRateLimit, 24, 500);
         _renderCursor = renderCursor;
         _falseColorEnabled = falseColor ? 1 : 0;
         _analyzeLuminance = analyzeLuminance;
@@ -263,7 +267,9 @@ internal sealed class MirrorSession : IDisposable
         bool duplicationReady = TryCreateDuplication();
         CreatePresenters();
         CreatePipeline();
-        StatusChanged?.Invoke(Localization.T(duplicationReady ? "D3DReady" : "SecureDesktopWaiting"));
+        StatusChanged?.Invoke(Localization.T(duplicationReady
+            ? _analysisOnly ? "AnalysisD3DReady" : "D3DReady"
+            : _analysisOnly ? "AnalysisSecureDesktopWaiting" : "SecureDesktopWaiting"));
     }
 
     private bool TryCreateDuplication()
@@ -482,7 +488,8 @@ internal sealed class MirrorSession : IDisposable
                         ? Localization.T("CursorRendered")
                         : Localization.T("CursorWaiting");
                 if (_captureAccessPaused)
-                    StatusChanged?.Invoke(Localization.T("SecureDesktopWaiting"));
+                    StatusChanged?.Invoke(Localization.T(
+                        _analysisOnly ? "AnalysisSecureDesktopWaiting" : "SecureDesktopWaiting"));
                 else
                     StatusChanged?.Invoke(Localization.F(
                         "RunningStatus",
@@ -644,7 +651,9 @@ internal sealed class MirrorSession : IDisposable
             return;
 
         _captureAccessPaused = paused;
-        StatusChanged?.Invoke(Localization.T(paused ? "SecureDesktopWaiting" : "CaptureResumed"));
+        StatusChanged?.Invoke(Localization.T(paused
+            ? _analysisOnly ? "AnalysisSecureDesktopWaiting" : "SecureDesktopWaiting"
+            : _analysisOnly ? "AnalysisCaptureResumed" : "CaptureResumed"));
     }
 
     private void EnsureFrameResources(Texture2DDescription sourceDescription)
@@ -730,7 +739,8 @@ internal sealed class MirrorSession : IDisposable
             result.CheckError();
         }
 
-        _waitForOutputBeforeNextFrame = _frameRateMode != FrameRateMode.Unlimited;
+        _waitForOutputBeforeNextFrame =
+            _presenters.Count > 0 && _frameRateMode != FrameRateMode.Unlimited;
     }
 
     private Viewport CalculateViewport(OutputPresenter presenter)

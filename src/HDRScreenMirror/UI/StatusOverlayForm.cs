@@ -24,8 +24,11 @@ internal sealed class StatusOverlayForm : Form
 
     private readonly bool _mouseThrough;
     private readonly bool _excludeFromCapture;
+    private readonly bool _analysisOnly;
     private readonly Rectangle _outputBounds;
-    private readonly string _route;
+    private readonly string _captureName;
+    private readonly string _presentName;
+    private string _route;
     private Font _titleFont = CreatePixelFont(11.33f, FontStyle.Bold);
     private Font _stateFont = CreatePixelFont(11.33f, FontStyle.Bold);
     private Font _bodyFont = CreatePixelFont(12f, FontStyle.Regular);
@@ -56,20 +59,25 @@ internal sealed class StatusOverlayForm : Form
         bool mouseThrough,
         bool showPointerLuminance,
         bool falseColor,
-        bool excludeFromCapture = true)
+        bool excludeFromCapture = true,
+        bool analysisOnly = false)
     {
         _mouseThrough = mouseThrough;
         _excludeFromCapture = excludeFromCapture;
+        _analysisOnly = analysisOnly;
         _outputBounds = outputBounds;
         _showPointerLuminance = showPointerLuminance;
         _falseColor = falseColor;
-        _route = $"{capture.DeviceName}  →  {present.DeviceName}";
+        _captureName = capture.DisplayName;
+        _presentName = present.DisplayName;
+        _route = CreateRouteText();
 
         Text = "HDRScreenMirror Status";
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
         AutoScaleMode = AutoScaleMode.None;
-        Bounds = new Rectangle(outputBounds.Left + 24, outputBounds.Top + 24, PanelWidth, CalculatePanelHeight());
+        int initialX = outputBounds.Left + 24;
+        Bounds = new Rectangle(initialX, outputBounds.Top + 24, PanelWidth, CalculatePanelHeight());
         TopMost = true;
         ShowInTaskbar = false;
         BackColor = SurfaceColor;
@@ -140,7 +148,11 @@ internal sealed class StatusOverlayForm : Form
             Invalidate();
     }
 
-    public void ApplyLanguage() => Invalidate();
+    public void ApplyLanguage()
+    {
+        _route = CreateRouteText();
+        Invalidate();
+    }
 
     protected override void OnShown(EventArgs eventArgs)
     {
@@ -156,14 +168,15 @@ internal sealed class StatusOverlayForm : Form
         ApplyDpi(eventArgs.DeviceDpiNew);
     }
 
-    internal void SetCaptureExclusion(bool excluded)
+    internal bool SetCaptureExclusion(bool excluded)
     {
         if (!_excludeFromCapture || !IsHandleCreated)
-            return;
+            return !excluded;
 
-        NativeMethods.SetWindowDisplayAffinity(
+        bool applied = NativeMethods.SetWindowDisplayAffinity(
             Handle,
             excluded ? NativeMethods.WdaExcludeFromCapture : NativeMethods.WdaNone);
+        return applied;
     }
 
     protected override void OnResize(EventArgs eventArgs)
@@ -500,7 +513,12 @@ internal sealed class StatusOverlayForm : Form
     {
         int footerY = CalculatePanelHeight() - 29;
         using SolidBrush footerBrush = new(MutedTextColor);
-        graphics.DrawString(Localization.T("OverlayHotkeys"), _footerFont, footerBrush, OuterPadding, footerY);
+        graphics.DrawString(
+            Localization.T(_analysisOnly ? "OverlayHotkeysAnalysis" : "OverlayHotkeys"),
+            _footerFont,
+            footerBrush,
+            OuterPadding,
+            footerY);
     }
 
     private int CalculatePanelHeight()
@@ -527,10 +545,12 @@ internal sealed class StatusOverlayForm : Form
         float newScale = Math.Max(1f, dpi / (float)HighDpiLayoutBaseline);
         _dpiScale = newScale;
         RecreateFonts(dpi);
+        int panelWidth = ScaleToDevice(PanelWidth);
+        int panelX = _outputBounds.Left + ScaleToDevice(24);
         Bounds = new Rectangle(
-            _outputBounds.Left + ScaleToDevice(24),
+            Math.Max(_outputBounds.Left, panelX),
             _outputBounds.Top + ScaleToDevice(24),
-            ScaleToDevice(PanelWidth),
+            panelWidth,
             ScaleToDevice(CalculatePanelHeight()));
         UpdateRoundedRegion();
         Invalidate();
@@ -598,6 +618,10 @@ internal sealed class StatusOverlayForm : Form
         "B8G8R8A8_UNorm" => "BGRA8 SDR",
         _ => format
     };
+
+    private string CreateRouteText() => _analysisOnly
+        ? Localization.F("SingleDisplayRoute", _captureName)
+        : $"{_captureName}  →  {_presentName}";
 
     protected override void Dispose(bool disposing)
     {

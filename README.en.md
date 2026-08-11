@@ -37,23 +37,24 @@ It now includes a complete suite of HDR analysis tools.
 1. Real time Windows HDR desktop capture and mirroring.
 2. FP16 scRGB HDR output designed to preserve HDR luminance and color information.
 3. A single output display or every other display connected to the same GPU.
-4. Automatic aspect ratio preservation with black bars when required.
-5. Optional cursor rendering on output displays.
-6. An optional live status panel in the top left corner of each output display.
-7. Global hotkeys.
-8. HDR luminance analysis tools.
-9. HDR gamut analysis tools.
-10. Three frame rate policies: follow the output display, fixed limit, and unlimited.
-11. Automatic mirror recovery and layout adaptation after Windows resolution or display mode changes.
-12. OLED ABL luminance estimation from user supplied window luminance measurements, including estimated average, maximum, and minimum frame luminance after ABL.
+4. HDR single display analysis without an output display.
+5. Automatic aspect ratio preservation with black bars when required.
+6. Optional cursor rendering on output displays.
+7. An optional live status panel in the top left corner of a mirror output or the analyzed capture display.
+8. Global hotkeys.
+9. HDR luminance analysis tools.
+10. HDR gamut analysis tools.
+11. Three frame rate policies: follow the output display, fixed limit, and unlimited.
+12. Automatic session recovery and layout adaptation after Windows resolution or display mode changes.
+13. OLED ABL luminance estimation from user supplied window luminance measurements, including estimated average, maximum, and minimum frame luminance after ABL.
 
 ## Requirements
 
 1. A 64 bit edition of Windows 10 or Windows 11.
 2. [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0).
 3. A GPU and driver that support Direct3D 11 and Desktop Duplication.
-4. The capture and output displays must be connected to the same GPU.
-5. HDR must be enabled in Windows for the output display.
+4. For HDR multi display mirroring, the capture and output displays must be connected to the same GPU.
+5. For HDR multi display mirroring, HDR must be enabled in Windows for the output display.
 
 ## Installation
 
@@ -67,7 +68,7 @@ Application settings and ABL profiles are stored in `%LocalAppData%\HDRScreenMir
 
 ## How to use it
 
-### First run
+### HDR multi display mirroring
 
 1. Open Windows Settings and set the displays to “Extend these displays”.
 2. Enable HDR in Windows for the target display.
@@ -76,6 +77,19 @@ Application settings and ABL profiles are stored in `%LocalAppData%\HDRScreenMir
 5. Select the target screen under “Output display”.
 6. Click “Start HDR mirror”.
 7. Click “Stop” or use a global hotkey when you want to end the mirror session.
+
+### HDR single display analysis
+
+Single display analysis does not create a mirror output window. A system with only one connected display can still show frame luminance, cursor area luminance, ABL estimation, luminance markers, and the real time gamut analysis panel.
+
+1. Select “HDR single-display analysis” under “Mode”.
+2. Select the display to analyze under “Capture display”.
+3. Enable at least one of the status panel, highest and lowest luminance markers, or the real time gamut analysis panel.
+4. Click “Start HDR analysis”.
+5. The control panel hides to the tray. Analysis overlays appear on the capture display and are excluded from Desktop Duplication.
+6. Press `Ctrl + F8` to stop analysis or `Ctrl + F12` to recall the control panel.
+
+Single display analysis can cover applications that use normal windowed fullscreen, including MPC BE. It cannot cover exclusive fullscreen applications or applications that use an independent presentation path. Use windowed, maximized, or borderless fullscreen mode in those applications.
 
 ### Mirroring to three or more displays
 
@@ -87,16 +101,17 @@ For example, if three displays are connected to one GPU, HDRScreenMirror can cap
 
 | Option | Default | Purpose |
 | --- | --- | --- |
+| Mode | HDR multi-display mirroring | Manually switches between HDR multi display mirroring and HDR single display analysis; analysis does not require an output display |
 | SDR white level | 203 nits | Controls SDR fallback and cursor brightness in the HDR output without changing the FP16 HDR image |
 | Frame rate | Follow output display | Offers follow output display, fixed limit, and unlimited modes; the fixed limit supports 24 to 500 fps |
-| Output status panel | Enabled | Shows resolution, format, frame rate, cursor state, average frame luminance, maximum luminance, and minimum luminance in the top left corner |
+| Status panel | Enabled | Shows resolution, format, frame rate, cursor state, and frame luminance data in the top left corner of a mirror output or the analyzed capture display |
 | Render cursor on output | Enabled | Composites the capture display cursor into the mirror image |
 | Show cursor area luminance | Enabled | Shows the average luminance of the area under the cursor to three decimal places; reports when the cursor is outside the capture area |
 | Output luminance false color | Disabled | Switches every output display to the same luminance false color view and shows its scale in the status panel |
 | Mark highest and lowest luminance | Disabled | Marks the highest and lowest average luminance locations on the output image and shows their values |
 | Show ABL estimated luminance | Disabled | Estimates average, maximum, and minimum frame luminance after OLED ABL using the selected profile, and shows equivalent APL, overall scale, and luminance reduction |
-| Output CIE 1976 gamut diagram | Disabled | Shows the current frame `u′v′` heatmap, three reference gamut triangles, and mutually exclusive gamut percentages in the bottom left corner |
-| Click through mirror | Disabled | Lets mouse clicks reach the desktop behind the mirror window |
+| Real-time gamut analysis panel | Disabled | Shows the current frame CIE 1976 `u′v′` heatmap, three reference gamut triangles, and mutually exclusive gamut percentages in the bottom left corner |
+| Click through mirror | Disabled | Multi display mirroring only; lets mouse clicks reach the desktop behind the mirror window |
 | Enable global hotkeys | Enabled | Registers shortcuts for start or stop, false color, screenshots, the status panel, and control panel recall |
 | Minimize to tray on close | Disabled | Hides the control panel while keeping an active mirror session running |
 | Move output windows to capture display on start | Disabled | Prevents windows from becoming inaccessible behind the mirror; minimized, system, and elevated windows may not move |
@@ -111,9 +126,9 @@ For example, if three displays are connected to one GPU, HDRScreenMirror can cap
 | Fixed limit | Limits processing to a configured rate from 24 to 500 fps |
 | Unlimited | Does not actively limit processing and favors the highest available capture rate at the cost of additional GPU usage |
 
-Stop mirroring before changing the frame rate policy. If the Windows resolution or display mode changes while mirroring, the application enumerates the displays again, rebuilds the output, and resumes the mirror automatically.
+Stop the current session before changing the frame rate policy. If the Windows resolution or display mode changes, the application rescans the displays, rebuilds the session, and automatically resumes the previous operation mode.
 
-### CIE 1976 gamut analysis
+### Real time gamut analysis panel
 
 Shows the percentage of current frame elements that fall within each gamut range.
 
@@ -127,7 +142,7 @@ When “Show ABL estimated luminance” is enabled, source signal luminance is f
 2. The equivalent APL of the current frame.
 3. The overall scale and luminance reduction produced by the selected profile.
 
-Profiles can be created, duplicated, renamed, deleted, and saved. The active profile and ABL estimation can be changed while mirroring without stopping the session. All output displays use the same active profile.
+Profiles can be created, duplicated, renamed, deleted, and saved. The active profile and ABL estimation can be changed while a session is running without stopping it. All output displays use the same active profile.
 
 ### Luminance false color scale
 
@@ -145,15 +160,15 @@ Profiles can be created, duplicated, renamed, deleted, and saved. The active pro
 
 | Hotkey | Action |
 | --- | --- |
-| `Ctrl + F8` | Start or stop mirroring |
-| `Ctrl + F9` | Toggle luminance false color |
-| `Ctrl + F10` | Capture the mirror image on every output display |
-| `Ctrl + F11` | Show or hide the output status panel |
+| `Ctrl + F8` | Start or stop the selected mirror or analysis mode |
+| `Ctrl + F9` | Toggle luminance false color in multi display mirroring |
+| `Ctrl + F10` | Capture the mirror image on every output display in multi display mirroring |
+| `Ctrl + F11` | Show or hide the status panel |
 | `Ctrl + F12` | Recall the control panel to the capture display |
 
 ## Output screenshots
 
-After mirroring starts, press `Ctrl + F10` to capture the image actually shown on every output display. A brief confirmation appears on the output display after the files are saved. The PNG includes the false color view, visible status panel, CIE 1976 gamut panel, and luminance markers. Multiple output displays are saved as separate images.
+After multi display mirroring starts, press `Ctrl + F10` to capture the image actually shown on every output display. A brief confirmation appears on the output display after the files are saved. The PNG includes the false color view, visible status panel, real time gamut analysis panel, and luminance markers. Multiple output displays are saved as separate images. Output image capture is unavailable in single display analysis.
 
 “Save automatically” writes images directly to the configured folder. The default is a `Screenshots` folder beside `HDRScreenMirror.exe`. “Choose a location each time” opens a save dialog after the hotkey is pressed.
 
@@ -183,28 +198,47 @@ Some DRM protected content and some Windows MPO hardware overlays may not enter 
 
 Press `Ctrl + F12`. If tray mode is enabled, you can also double click the tray icon.
 
+### A fullscreen application covers single display analysis overlays
+
+Analysis overlays automatically recover their window level over applications that use normal windowed fullscreen, including MPC BE. Normal Windows topmost windows cannot cover exclusive fullscreen applications or applications that use an independent presentation path, including the fullscreen mode of HDR + WCG Image Viewer. Use windowed, maximized, or borderless fullscreen mode instead.
+
 ## Known limitations
 
 1. Cross GPU mirroring is not currently supported.
-2. The same display cannot be both the capture and output display.
+2. HDR multi display mirroring cannot use the same display for capture and output; HDR single display analysis does not create an output window.
 3. Some MPO surfaces, protected videos, and exclusive fullscreen content may not be available to Desktop Duplication.
 4. When the driver only returns an SDR image, original HDR highlights cannot be reconstructed.
 5. Rare legacy monochrome or XOR cursors may be displayed using approximate colors.
+6. HDR single display analysis overlays cannot cover exclusive fullscreen applications or applications that use an independent presentation path.
 
 ## Changelog
+
+### 1.7.0
+
+1. Added manually selectable HDR multi display mirroring and HDR single display analysis modes.
+2. Added single display analysis without an output display, with the status panel, luminance markers, and real time gamut analysis panel shown on the capture display.
+3. Excluded single display analysis overlays from Desktop Duplication to prevent them from contaminating luminance and gamut statistics.
+4. Added startup validation that requires at least one visible analysis overlay in single display analysis.
+5. Disabled output display, false color, output cursor, and click through controls when single display analysis is selected.
+6. Added the mode selector and refined the control panel layout. Renamed “Output status panel” to “Status panel” and “Refresh displays” to “Rescan displays”.
+7. Improved analysis overlay window level recovery over normal fullscreen applications such as MPC BE.
+8. Documented the limitation for exclusive fullscreen applications and independent presentation paths.
 
 ### 1.6.1
 
 1. Restored application settings and ABL profiles to `%LocalAppData%\HDRScreenMirror\settings.json`.
 
-### 1.5.0
+### 1.6.0
 
 1. Added ABL simulation using user supplied OLED HDR window luminance measurements and an editable EOTF curve to estimate physical display luminance.
-2. Added follow output display, fixed limit, and unlimited frame rate policies, with follow output display as the default.
-3. Added a persistent fixed frame rate limit from 24 to 500 fps.
-4. Fixed image cropping when capture and output displays use different Windows resolutions or DPI scaling values.
-5. Added display mode change detection during mirroring, with automatic output adaptation and mirror recovery after a resolution change.
-6. Improved the default control panel size and option layout to prevent clipped descriptions and controls.
+
+### 1.5.0
+
+1. Added follow output display, fixed limit, and unlimited frame rate policies, with follow output display as the default.
+2. Added a persistent fixed frame rate limit from 24 to 500 fps.
+3. Fixed image cropping when capture and output displays use different Windows resolutions or DPI scaling values.
+4. Added display mode change detection during mirroring, with automatic output adaptation and mirror recovery after a resolution change.
+5. Improved the default control panel size and option layout to prevent clipped descriptions and controls.
 
 ### 1.4.1
 

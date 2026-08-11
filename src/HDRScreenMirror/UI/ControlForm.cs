@@ -18,6 +18,8 @@ internal sealed class ControlForm : Form
     private const string FollowOutputFrameRateMode = "output";
     private const string FixedFrameRateMode = "fixed";
     private const string UnlimitedFrameRateMode = "unlimited";
+    private const string MirrorOperationMode = "mirror";
+    private const string AnalysisOperationMode = "analysis";
 
     private readonly ComboBox _captureCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly ComboBox _presentCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
@@ -89,6 +91,12 @@ internal sealed class ControlForm : Form
     private readonly Button _startButton = CreateButton("StartMirror", 196);
     private readonly Button _stopButton = CreateButton("Stop", 92);
     private readonly Button _aboutButton = CreateButton("About", 88);
+    private readonly ComboBox _modeCombo = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList,
+        Width = 228,
+        Margin = new Padding(4, 8, 4, 3)
+    };
     private readonly ComboBox _languageCombo = new()
     {
         DropDownStyle = ComboBoxStyle.DropDownList,
@@ -102,14 +110,6 @@ internal sealed class ControlForm : Form
         Font = new Font("Consolas", 9.5f, FontStyle.Regular),
         ForeColor = Color.FromArgb(52, 58, 70),
         TextAlign = ContentAlignment.MiddleLeft
-    };
-    private readonly Label _noteLabel = new()
-    {
-        Dock = DockStyle.Fill,
-        AutoSize = false,
-        Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
-        ForeColor = Color.FromArgb(84, 91, 104),
-        Padding = new Padding(2, 8, 2, 4)
     };
     private readonly Label _statusLabel = new()
     {
@@ -138,10 +138,14 @@ internal sealed class ControlForm : Form
     private bool _updatingLanguageSelection;
     private bool _updatingScreenshotSelection;
     private bool _updatingFrameRateSelection;
+    private bool _updatingModeSelection;
     private bool _updatingAblProfileSelection;
     private bool _updatingDisplaySelection;
     private bool _takingScreenshot;
+    private bool _singleDisplayAnalysis;
+    private bool _controlWindowCaptureExcluded;
     private bool _restartMirrorAfterDisplayChange;
+    private bool? _displayChangeAnalysisOnly;
     private string? _displayChangeCaptureId;
     private string? _displayChangePresentId;
 
@@ -149,7 +153,7 @@ internal sealed class ControlForm : Form
     {
         Text = "HDRScreenMirror";
         Width = 1280;
-        Height = 984;
+        Height = 920;
         MinimumSize = new Size(1120, 728);
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -181,6 +185,7 @@ internal sealed class ControlForm : Form
         InitializeLanguageSelector();
         InitializeScreenshotSelector();
         InitializeFrameRateSelector();
+        InitializeOperationModeSelector();
         InitializeAblProfiles();
         Controls.Add(BuildLayout());
         ApplyLanguage();
@@ -205,6 +210,7 @@ internal sealed class ControlForm : Form
         _minimizeToTray.CheckedChanged += (_, _) => SaveCloseBehavior();
         _screenshotModeCombo.SelectedIndexChanged += (_, _) => ChangeScreenshotMode();
         _frameRateModeCombo.SelectedIndexChanged += (_, _) => ChangeFrameRateMode();
+        _modeCombo.SelectedIndexChanged += (_, _) => ChangeOperationMode();
         _frameRateLimit.ValueChanged += (_, _) => ChangeFrameRateLimit();
         _chooseScreenshotDirectoryButton.Click += (_, _) => ChooseScreenshotDirectory();
         _languageCombo.SelectedIndexChanged += (_, _) => ChangeLanguage();
@@ -224,7 +230,7 @@ internal sealed class ControlForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(20, 18, 20, 18),
             ColumnCount = 2,
-            RowCount = 13,
+            RowCount = 12,
             BackColor = Color.FromArgb(248, 249, 251)
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260));
@@ -239,7 +245,6 @@ internal sealed class ControlForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 176));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
@@ -274,11 +279,8 @@ internal sealed class ControlForm : Form
         layout.Controls.Add(shortcutGroup, 0, 9);
         layout.SetColumnSpan(shortcutGroup, 2);
 
-        layout.Controls.Add(_noteLabel, 0, 10);
-        layout.SetColumnSpan(_noteLabel, 2);
-
         Control actionRow = BuildActionRow();
-        layout.Controls.Add(actionRow, 0, 11);
+        layout.Controls.Add(actionRow, 0, 10);
         layout.SetColumnSpan(actionRow, 2);
 
         GroupBox statusGroup = new()
@@ -290,7 +292,7 @@ internal sealed class ControlForm : Form
             BackColor = Color.White
         };
         statusGroup.Controls.Add(_statusLabel);
-        layout.Controls.Add(statusGroup, 0, 12);
+        layout.Controls.Add(statusGroup, 0, 11);
         layout.SetColumnSpan(statusGroup, 2);
         return layout;
     }
@@ -477,13 +479,33 @@ internal sealed class ControlForm : Form
 
     private Control BuildActionRow()
     {
-        TableLayoutPanel row = new() { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+        TableLayoutPanel row = new() { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1 };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 320));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 404));
 
         FlowLayoutPanel primaryActions = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
         primaryActions.Controls.Add(_startButton);
         primaryActions.Controls.Add(_stopButton);
+
+        FlowLayoutPanel modeActions = new()
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Padding = new Padding(2, 0, 4, 0)
+        };
+        modeActions.Controls.Add(new Label
+        {
+            Text = Localization.T("OperationMode"),
+            Tag = "OperationMode",
+            AutoSize = false,
+            Size = new Size(70, 42),
+            TextAlign = ContentAlignment.MiddleRight,
+            Margin = new Padding(0, 3, 2, 3)
+        });
+        modeActions.Controls.Add(_modeCombo);
+
         FlowLayoutPanel secondaryActions = new()
         {
             Dock = DockStyle.Fill,
@@ -503,7 +525,8 @@ internal sealed class ControlForm : Form
         secondaryActions.Controls.Add(_languageCombo);
         secondaryActions.Controls.Add(_aboutButton);
         row.Controls.Add(primaryActions, 0, 0);
-        row.Controls.Add(secondaryActions, 1, 0);
+        row.Controls.Add(modeActions, 1, 0);
+        row.Controls.Add(secondaryActions, 2, 0);
         return row;
     }
 
@@ -572,6 +595,42 @@ internal sealed class ControlForm : Form
         UpdateFrameRateSettingsState();
     }
 
+    private void InitializeOperationModeSelector()
+    {
+        _settings.OperationMode = NormalizeOperationMode(_settings.OperationMode);
+        RefreshOperationModeChoices();
+    }
+
+    private void RefreshOperationModeChoices()
+    {
+        string selectedMode = NormalizeOperationMode(_settings.OperationMode);
+        _updatingModeSelection = true;
+        _modeCombo.Items.Clear();
+        _modeCombo.Items.AddRange(
+        [
+            new OperationModeChoice(MirrorOperationMode, Localization.T("OperationModeMirror")),
+            new OperationModeChoice(AnalysisOperationMode, Localization.T("OperationModeAnalysis"))
+        ]);
+        _modeCombo.SelectedItem = _modeCombo.Items
+            .Cast<OperationModeChoice>()
+            .First(choice => choice.Code == selectedMode);
+        _updatingModeSelection = false;
+    }
+
+    private void ChangeOperationMode()
+    {
+        if (_updatingModeSelection ||
+            _modeCombo.SelectedItem is not OperationModeChoice choice)
+        {
+            return;
+        }
+
+        _settings.OperationMode = choice.Code;
+        _settings.Save();
+        SetRunningState(_session is not null);
+        RefreshFrameRateModeChoices();
+    }
+
     private void InitializeAblProfiles()
     {
         _settings.NormalizeAblProfiles();
@@ -637,6 +696,12 @@ internal sealed class ControlForm : Form
         using AblProfileManagerForm dialog = new(
             _settings.AblProfiles,
             _settings.ActiveAblProfileId);
+        if (_singleDisplayAnalysis)
+        {
+            dialog.Shown += (_, _) => NativeMethods.SetWindowDisplayAffinity(
+                dialog.Handle,
+                NativeMethods.WdaExcludeFromCapture);
+        }
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
@@ -681,7 +746,9 @@ internal sealed class ControlForm : Form
         _frameRateModeCombo.Items.Clear();
         _frameRateModeCombo.Items.AddRange(
         [
-            new FrameRateModeChoice(FollowOutputFrameRateMode, Localization.T("FrameRateFollowOutput")),
+            new FrameRateModeChoice(
+                FollowOutputFrameRateMode,
+                Localization.T("FrameRateFollowOutput")),
             new FrameRateModeChoice(FixedFrameRateMode, Localization.T("FrameRateFixed")),
             new FrameRateModeChoice(UnlimitedFrameRateMode, Localization.T("FrameRateUnlimited"))
         ]);
@@ -753,9 +820,11 @@ internal sealed class ControlForm : Form
     private void UpdateScreenshotSettingsState()
     {
         bool automatic = NormalizeScreenshotMode(_settings.ScreenshotSaveMode) == AutomaticScreenshotMode;
+        bool enabled = _session is null || !_singleDisplayAnalysis;
         _screenshotDirectoryTextBox.Text = GetScreenshotDirectory();
-        _screenshotDirectoryTextBox.Enabled = automatic;
-        _chooseScreenshotDirectoryButton.Enabled = automatic;
+        _screenshotModeCombo.Enabled = enabled;
+        _screenshotDirectoryTextBox.Enabled = enabled && automatic;
+        _chooseScreenshotDirectoryButton.Enabled = enabled && automatic;
     }
 
     private void ChooseScreenshotDirectory()
@@ -792,20 +861,25 @@ internal sealed class ControlForm : Form
         ApplyLocalizedControlText(this);
         RefreshScreenshotModeChoices();
         RefreshFrameRateModeChoices();
+        RefreshOperationModeChoices();
         RefreshAblProfileChoices();
         UpdateScreenshotSettingsState();
         UpdateFrameRateSettingsState();
         UpdateAblControlsState();
         _shortcutLabel.Text = Localization.T("ShortcutText");
-        _noteLabel.Text = Localization.T("MainNote");
         RefreshDisplayLabels();
+        UpdateModeText();
 
         if (_session is not null)
-            _statusLabel.Text = Localization.F("StatusMirroring", _mirrorWindows.Count);
+            _statusLabel.Text = _singleDisplayAnalysis
+                ? Localization.T("StatusAnalyzing")
+                : Localization.F("StatusMirroring", _mirrorWindows.Count);
         else if (!_hasEnumeratedDisplays)
             _statusLabel.Text = Localization.T("StatusEnumerating");
         else if (_displays.Count == 0)
             _statusLabel.Text = Localization.T("StatusNoDisplays");
+        else if (_displays.Count == 1)
+            _statusLabel.Text = Localization.T("StatusFoundSingleDisplay");
         else
             _statusLabel.Text = Localization.F("StatusFoundDisplays", _displays.Count);
 
@@ -883,6 +957,17 @@ internal sealed class ControlForm : Form
         _ => FollowOutputFrameRateMode
     };
 
+    private static string NormalizeOperationMode(string? mode) => mode switch
+    {
+        AnalysisOperationMode => AnalysisOperationMode,
+        _ => MirrorOperationMode
+    };
+
+    private bool IsAnalysisModeSelected() =>
+        _modeCombo.SelectedItem is OperationModeChoice choice
+            ? choice.Code == AnalysisOperationMode
+            : NormalizeOperationMode(_settings.OperationMode) == AnalysisOperationMode;
+
     private FrameRateMode GetFrameRateMode() => NormalizeFrameRateMode(_settings.FrameRateMode) switch
     {
         FixedFrameRateMode => FrameRateMode.Fixed,
@@ -924,6 +1009,7 @@ internal sealed class ControlForm : Form
                 {
                     _statusLabel.Text = Localization.T("StatusNoDisplays");
                     _startButton.Enabled = false;
+                    UpdateModeText();
                     return false;
                 }
 
@@ -938,9 +1024,11 @@ internal sealed class ControlForm : Form
             }
 
             SaveInitialDisplaySelection();
-            _startButton.Enabled = _displays.Count > 1;
-            _statusLabel.Text = Localization.F("StatusFoundDisplays", _displays.Count);
-            UpdatePresentSelectorState();
+            RefreshFrameRateModeChoices();
+            SetRunningState(false);
+            _statusLabel.Text = _displays.Count == 1
+                ? Localization.T("StatusFoundSingleDisplay")
+                : Localization.F("StatusFoundDisplays", _displays.Count);
             return true;
         }
         catch (Exception exception)
@@ -1021,7 +1109,10 @@ internal sealed class ControlForm : Form
         return 0;
     }
 
-    private void StartMirror(bool refreshDisplayState = true, bool moveOutputWindows = true)
+    private void StartMirror(
+        bool refreshDisplayState = true,
+        bool moveOutputWindows = true,
+        bool? analysisOnlyOverride = null)
     {
         if (_session is not null)
             return;
@@ -1037,8 +1128,23 @@ internal sealed class ControlForm : Form
         if (_captureCombo.SelectedItem is not DisplayTarget capture)
             return;
 
-        IReadOnlyList<DisplayTarget> targets = ResolveOutputTargets(capture);
-        if (targets.Count == 0)
+        bool analysisOnly = analysisOnlyOverride ?? IsAnalysisModeSelected();
+        if (analysisOnly &&
+            !_showStatusOverlay.Checked &&
+            !_showLuminanceMarkers.Checked &&
+            !_showCieAnalysis.Checked)
+        {
+            MessageBox.Show(
+                this,
+                Localization.T("NoVisibleAnalysisContent"),
+                Localization.T("NoVisibleAnalysisTitle"),
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        IReadOnlyList<DisplayTarget> targets = analysisOnly ? [] : ResolveOutputTargets(capture);
+        if (!analysisOnly && targets.Count == 0)
         {
             MessageBox.Show(
                 Localization.T("NoGpuOutputs"),
@@ -1064,47 +1170,67 @@ internal sealed class ControlForm : Form
 
         try
         {
+            _singleDisplayAnalysis = analysisOnly;
+            if (analysisOnly && !SetControlWindowCaptureExclusion(true))
+                throw new InvalidOperationException(Localization.T("CaptureExclusionFailed"));
+
             AblProfile? activeAblProfile =
                 _showAblEstimate.Checked ? GetActiveAblProfile() : null;
             PositionOnCaptureDisplay(capture);
-            if (moveOutputWindows && _moveOutputWindows.Checked)
+            if (!analysisOnly && moveOutputWindows && _moveOutputWindows.Checked)
             {
                 Rectangle captureWorkArea = FindScreenForDisplay(capture).WorkingArea;
                 WindowRelocator.MoveWindowsToCapture(targets, captureWorkArea);
             }
 
             List<MirrorOutputBinding> bindings = [];
-            foreach (DisplayTarget target in targets)
+            IReadOnlyList<DisplayTarget> overlayTargets = analysisOnly ? [capture] : targets;
+            foreach (DisplayTarget target in overlayTargets)
             {
-                MirrorForm mirrorWindow = new(target.Bounds, _mouseThrough.Checked);
-                mirrorWindow.Show();
-                _mirrorWindows.Add(mirrorWindow);
-                bindings.Add(new MirrorOutputBinding(target, mirrorWindow.Handle));
+                MirrorForm? mirrorWindow = null;
+                if (!analysisOnly)
+                {
+                    mirrorWindow = new MirrorForm(target.Bounds, _mouseThrough.Checked);
+                    mirrorWindow.Show();
+                    _mirrorWindows.Add(mirrorWindow);
+                    bindings.Add(new MirrorOutputBinding(target, mirrorWindow.Handle));
+                }
 
                 StatusOverlayForm overlay = new(
                     target.Bounds,
                     capture,
                     target,
-                    _mouseThrough.Checked,
+                    analysisOnly || _mouseThrough.Checked,
                     _showPointerLuminance.Checked,
-                    _falseColor.Checked);
+                    !analysisOnly && _falseColor.Checked,
+                    analysisOnly: analysisOnly);
                 overlay.SetAblEstimate(
                     activeAblProfile is not null,
                     activeAblProfile?.Name ?? string.Empty);
-                overlay.Show(mirrorWindow);
+                if (mirrorWindow is null)
+                    overlay.Show();
+                else
+                    overlay.Show(mirrorWindow);
+                _statusOverlays.Add(overlay);
+                if (analysisOnly && !overlay.SetCaptureExclusion(true))
+                    throw new InvalidOperationException(Localization.T("CaptureExclusionFailed"));
                 if (!_showStatusOverlay.Checked)
                     overlay.Hide();
-                _statusOverlays.Add(overlay);
 
                 AnalysisOverlayForm analysisOverlay = new(
                     target.Bounds,
                     capture,
                     _showCieAnalysis.Checked,
                     _showLuminanceMarkers.Checked);
-                analysisOverlay.Show(mirrorWindow);
+                if (mirrorWindow is null)
+                    analysisOverlay.Show();
+                else
+                    analysisOverlay.Show(mirrorWindow);
+                _analysisOverlays.Add(analysisOverlay);
+                if (analysisOnly && !analysisOverlay.SetCaptureExclusion(true))
+                    throw new InvalidOperationException(Localization.T("CaptureExclusionFailed"));
                 if (!analysisOverlay.HasVisibleContent)
                     analysisOverlay.Hide();
-                _analysisOverlays.Add(analysisOverlay);
             }
 
             _session = new MirrorSession(
@@ -1113,8 +1239,8 @@ internal sealed class ControlForm : Form
                 (float)_paperWhite.Value,
                 GetFrameRateMode(),
                 decimal.ToInt32(_frameRateLimit.Value),
-                _renderCursor.Checked,
-                _falseColor.Checked,
+                analysisOnly || _renderCursor.Checked,
+                !analysisOnly && _falseColor.Checked,
                 true);
             _session.StatusChanged += OnSessionStatusChanged;
             _session.TelemetryChanged += OnSessionTelemetryChanged;
@@ -1127,17 +1253,28 @@ internal sealed class ControlForm : Form
             _session.Start();
 
             SetRunningState(true);
-            TopMost = true;
-            BringToFront();
-            Activate();
-            _statusLabel.Text = Localization.F("StatusMirroring", targets.Count);
+            _statusLabel.Text = analysisOnly
+                ? Localization.T("StatusAnalyzing")
+                : Localization.F("StatusMirroring", targets.Count);
+            if (analysisOnly)
+            {
+                TopMost = false;
+                HideToTray();
+            }
+            else
+            {
+                TopMost = true;
+                BringToFront();
+                Activate();
+            }
         }
         catch (Exception exception)
         {
             StopMirror();
             MessageBox.Show(
+                this,
                 exception.ToString(),
-                Localization.T("StartFailed"),
+                Localization.T(analysisOnly ? "StartAnalysisFailed" : "StartFailed"),
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }
@@ -1176,8 +1313,9 @@ internal sealed class ControlForm : Form
         return [present];
     }
 
-    private void StopMirror()
+    private void StopMirror(bool restoreControlWindow = true)
     {
+        bool wasSingleDisplayAnalysis = _singleDisplayAnalysis;
         MirrorSession? session = _session;
         _session = null;
 
@@ -1214,38 +1352,77 @@ internal sealed class ControlForm : Form
         }
         _mirrorWindows.Clear();
 
+        SetControlWindowCaptureExclusion(false);
+        _singleDisplayAnalysis = false;
         TopMost = false;
         SetRunningState(false);
         _statusLabel.Text = Localization.T("StatusStopped");
+        if (wasSingleDisplayAnalysis && restoreControlWindow && !_exitRequested)
+            RecallControlWindow();
     }
 
     private void SetRunningState(bool running)
     {
+        bool analysisMode = running ? _singleDisplayAnalysis : IsAnalysisModeSelected();
         _captureCombo.Enabled = !running;
-        _presentCombo.Enabled = !running && !_allOutputs.Checked;
-        _allOutputs.Enabled = !running;
+        _presentCombo.Enabled = !running && !analysisMode && !_allOutputs.Checked;
+        _allOutputs.Enabled = !running && !analysisMode && _displays.Count > 1;
         _paperWhite.Enabled = !running;
         _resetPaperWhiteButton.Enabled = !running;
         _frameRateModeCombo.Enabled = !running;
+        _modeCombo.Enabled = !running;
         UpdateFrameRateSettingsState();
         _showStatusOverlay.Enabled = true;
-        _renderCursor.Enabled = !running;
+        _renderCursor.Enabled = !running && !analysisMode;
         _showPointerLuminance.Enabled = true;
-        _falseColor.Enabled = true;
+        _falseColor.Enabled = !analysisMode;
         _showLuminanceMarkers.Enabled = true;
         UpdateAblControlsState();
         _showCieAnalysis.Enabled = true;
-        _mouseThrough.Enabled = !running;
+        _mouseThrough.Enabled = !running && !analysisMode;
         _moveOutputWindows.Enabled = !running;
         _refreshButton.Enabled = !running;
-        _startButton.Enabled = !running && _displays.Count > 1;
+        _startButton.Enabled = !running &&
+            _displays.Count > 0 &&
+            (analysisMode || _displays.Count > 1);
         _stopButton.Enabled = running;
+        UpdateScreenshotSettingsState();
+        UpdateModeText();
         UpdateTrayState();
     }
 
     private void UpdatePresentSelectorState()
     {
-        _presentCombo.Enabled = _session is null && !_allOutputs.Checked;
+        bool analysisMode = _session is not null
+            ? _singleDisplayAnalysis
+            : IsAnalysisModeSelected();
+        _presentCombo.Enabled = _session is null && !analysisMode && !_allOutputs.Checked;
+    }
+
+    private void UpdateModeText()
+    {
+        bool analysisMode = _session is not null
+            ? _singleDisplayAnalysis
+            : IsAnalysisModeSelected();
+        _startButton.Text = Localization.T(analysisMode ? "StartAnalysis" : "StartMirror");
+        _showStatusOverlay.Text = Localization.T("StatusOverlay");
+        _showCieAnalysis.Text = Localization.T("CieAnalysis");
+        _shortcutLabel.Text = Localization.T("ShortcutText");
+    }
+
+    private bool SetControlWindowCaptureExclusion(bool excluded)
+    {
+        if (!IsHandleCreated)
+            return !excluded;
+        if (!excluded && !_controlWindowCaptureExcluded)
+            return true;
+
+        bool applied = NativeMethods.SetWindowDisplayAffinity(
+            Handle,
+            excluded ? NativeMethods.WdaExcludeFromCapture : NativeMethods.WdaNone);
+        if (applied)
+            _controlWindowCaptureExcluded = excluded;
+        return applied;
     }
 
     private void UpdateStatusOverlayVisibility()
@@ -1257,6 +1434,7 @@ internal sealed class ControlForm : Form
             else
                 overlay.Hide();
         }
+        EnsureSingleDisplayAnalysisOverlaysOnTop();
     }
 
     private void UpdatePointerLuminanceVisibility()
@@ -1267,9 +1445,10 @@ internal sealed class ControlForm : Form
 
     private void UpdateFalseColorMode()
     {
-        _session?.SetFalseColor(_falseColor.Checked);
+        bool enabled = !_singleDisplayAnalysis && _falseColor.Checked;
+        _session?.SetFalseColor(enabled);
         foreach (StatusOverlayForm overlay in _statusOverlays)
-            overlay.SetFalseColor(_falseColor.Checked);
+            overlay.SetFalseColor(enabled);
     }
 
     private void UpdateLuminanceMarkerVisibility()
@@ -1279,6 +1458,7 @@ internal sealed class ControlForm : Form
             overlay.SetShowMarkers(_showLuminanceMarkers.Checked);
             UpdateAnalysisOverlayVisibility(overlay);
         }
+        EnsureSingleDisplayAnalysisOverlaysOnTop();
     }
 
     private void UpdateCieAnalysisVisibility()
@@ -1289,6 +1469,7 @@ internal sealed class ControlForm : Form
             overlay.SetShowCie(_showCieAnalysis.Checked);
             UpdateAnalysisOverlayVisibility(overlay);
         }
+        EnsureSingleDisplayAnalysisOverlaysOnTop();
     }
 
     private static void UpdateAnalysisOverlayVisibility(AnalysisOverlayForm overlay)
@@ -1464,7 +1645,26 @@ internal sealed class ControlForm : Form
             overlay.UpdateTelemetry(telemetry);
         foreach (AnalysisOverlayForm overlay in _analysisOverlays)
             overlay.UpdateMirrorTelemetry(telemetry);
+        EnsureSingleDisplayAnalysisOverlaysOnTop();
     });
+
+    private void EnsureSingleDisplayAnalysisOverlaysOnTop()
+    {
+        if (!_singleDisplayAnalysis)
+            return;
+
+        foreach (StatusOverlayForm overlay in _statusOverlays)
+        {
+            if (overlay.Visible && overlay.IsHandleCreated)
+                NativeMethods.EnsureOverlayAboveOccludingWindows(overlay.Handle);
+        }
+
+        foreach (AnalysisOverlayForm overlay in _analysisOverlays)
+        {
+            if (overlay.Visible && overlay.IsHandleCreated)
+                NativeMethods.EnsureOverlayAboveOccludingWindows(overlay.Handle);
+        }
+    }
 
     private void OnSessionLuminanceChanged(LuminanceTelemetry telemetry) => PostToUi(() =>
     {
@@ -1488,12 +1688,14 @@ internal sealed class ControlForm : Form
             return;
         }
 
+        bool analysisOnly = _singleDisplayAnalysis;
+        StopMirror();
         MessageBox.Show(
+            this,
             exception.ToString(),
-            Localization.T("RuntimeFailed"),
+            Localization.T(analysisOnly ? "RuntimeAnalysisFailed" : "RuntimeFailed"),
             MessageBoxButtons.OK,
             MessageBoxIcon.Error);
-        StopMirror();
     });
 
     private void OnSessionStopped() => PostToUi(() =>
@@ -1563,6 +1765,12 @@ internal sealed class ControlForm : Form
     {
         using AboutForm about = new();
         about.TopMost = TopMost;
+        if (_singleDisplayAnalysis)
+        {
+            about.Shown += (_, _) => NativeMethods.SetWindowDisplayAffinity(
+                about.Handle,
+                NativeMethods.WdaExcludeFromCapture);
+        }
         about.ShowDialog(this);
     }
 
@@ -1604,8 +1812,13 @@ internal sealed class ControlForm : Form
     private void UpdateTrayState()
     {
         bool running = _session is not null;
-        _trayToggleMirrorItem.Text = Localization.T(running ? "TrayStop" : "TrayStart");
-        _trayIcon.Text = running ? Localization.T("TrayRunning") : "HDRScreenMirror";
+        bool analysisMode = running ? _singleDisplayAnalysis : IsAnalysisModeSelected();
+        _trayToggleMirrorItem.Text = Localization.T(running
+            ? analysisMode ? "TrayStopAnalysis" : "TrayStop"
+            : analysisMode ? "TrayStartAnalysis" : "TrayStart");
+        _trayIcon.Text = running
+            ? Localization.T(analysisMode ? "TrayAnalyzing" : "TrayRunning")
+            : "HDRScreenMirror";
     }
 
     private void ToggleMirror()
@@ -1659,6 +1872,11 @@ internal sealed class ControlForm : Form
             }
             if (hotKeyId == ToggleFalseColorHotKeyId)
             {
+                if (_session is not null ? _singleDisplayAnalysis : IsAnalysisModeSelected())
+                {
+                    _statusLabel.Text = Localization.T("FalseColorNeedsOutput");
+                    return;
+                }
                 _falseColor.Checked = !_falseColor.Checked;
                 return;
             }
@@ -1672,11 +1890,16 @@ internal sealed class ControlForm : Form
         if (!_displayChangeTimer.Enabled)
         {
             _restartMirrorAfterDisplayChange = _session is not null;
+            _displayChangeAnalysisOnly = _restartMirrorAfterDisplayChange && _singleDisplayAnalysis
+                ? true
+                : null;
             _displayChangeCaptureId = _restartMirrorAfterDisplayChange
                 ? (_captureCombo.SelectedItem as DisplayTarget)?.StableId
                 : null;
             _displayChangePresentId = _restartMirrorAfterDisplayChange
-                ? (_presentCombo.SelectedItem as DisplayTarget)?.StableId
+                ? _singleDisplayAnalysis
+                    ? _settings.OutputDisplayId
+                    : (_presentCombo.SelectedItem as DisplayTarget)?.StableId
                 : null;
         }
 
@@ -1689,20 +1912,26 @@ internal sealed class ControlForm : Form
         _displayChangeTimer.Stop();
 
         bool restartMirror = _restartMirrorAfterDisplayChange;
+        bool? analysisOnly = _displayChangeAnalysisOnly;
         string? captureDisplayId = _displayChangeCaptureId;
         string? presentDisplayId = _displayChangePresentId;
         _restartMirrorAfterDisplayChange = false;
+        _displayChangeAnalysisOnly = null;
         _displayChangeCaptureId = null;
         _displayChangePresentId = null;
 
         if (restartMirror)
-            StopMirror();
+            StopMirror(false);
 
         if (!RefreshDisplays(captureDisplayId, presentDisplayId))
+        {
+            if (restartMirror && analysisOnly == true && !_exitRequested)
+                RecallControlWindow();
             return;
+        }
 
         if (restartMirror)
-            StartMirror(false, false);
+            StartMirror(false, false, analysisOnly);
     }
 
     private void RegisterConfiguredHotKeys()
@@ -1763,6 +1992,11 @@ internal sealed class ControlForm : Form
     }
 
     private sealed record FrameRateModeChoice(string Code, string DisplayName)
+    {
+        public override string ToString() => DisplayName;
+    }
+
+    private sealed record OperationModeChoice(string Code, string DisplayName)
     {
         public override string ToString() => DisplayName;
     }
