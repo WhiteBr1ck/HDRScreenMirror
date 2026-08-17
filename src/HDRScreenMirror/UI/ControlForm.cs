@@ -1480,7 +1480,7 @@ internal sealed class ControlForm : Form
             overlay.Hide();
     }
 
-    private void TakeOutputScreenshots()
+    private async void TakeOutputScreenshots()
     {
         if (_takingScreenshot)
             return;
@@ -1501,42 +1501,33 @@ internal sealed class ControlForm : Form
             foreach (AnalysisOverlayForm overlay in _analysisOverlays)
                 overlay.HideScreenshotNotification();
 
-            foreach (StatusOverlayForm overlay in _statusOverlays)
-            {
-                if (overlay.Visible)
-                {
-                    overlay.Invalidate();
-                    overlay.Update();
-                }
-                overlay.SetCaptureExclusion(false);
-            }
-            foreach (AnalysisOverlayForm overlay in _analysisOverlays)
-            {
-                if (overlay.Visible)
-                {
-                    overlay.Invalidate();
-                    overlay.Update();
-                }
-                overlay.SetCaptureExclusion(false);
-            }
-            foreach (MirrorForm mirrorWindow in _mirrorWindows)
-                mirrorWindow.SetCaptureExclusion(false);
+            MirrorSession session = _session;
+            IReadOnlyList<HdrScreenshotFrame> frames =
+                await session.CaptureOutputFramesAsync();
+            if (!ReferenceEquals(_session, session) || frames.Count != _mirrorWindows.Count)
+                throw new InvalidOperationException("The mirror outputs changed while taking the screenshot.");
 
-            NativeMethods.DwmFlush();
-
-            for (int i = 0; i < _mirrorWindows.Count; i++)
+            float paperWhiteNits = (float)_paperWhite.Value;
+            bool falseColorEnabled = _falseColor.Checked;
+            Bitmap[] bitmaps = await Task.Run(() => ConvertScreenshotFrames(
+                frames,
+                paperWhiteNits,
+                falseColorEnabled));
+            try
             {
-                Rectangle bounds = _mirrorWindows[i].Bounds;
-                using Bitmap bitmap = new(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
-                using (Graphics graphics = Graphics.FromImage(bitmap))
+                if (!ReferenceEquals(_session, session) || bitmaps.Length != _mirrorWindows.Count)
+                    throw new InvalidOperationException("The mirror outputs changed while taking the screenshot.");
+
+                for (int i = 0; i < bitmaps.Length; i++)
                 {
-                    graphics.CopyFromScreen(
-                        bounds.Location,
-                        Point.Empty,
-                        bounds.Size,
-                        CopyPixelOperation.SourceCopy);
+                    CompositeScreenshotOverlays(bitmaps[i], i);
+                    bitmaps[i].Save(paths[i], ImageFormat.Png);
                 }
-                bitmap.Save(paths[i], ImageFormat.Png);
+            }
+            finally
+            {
+                foreach (Bitmap bitmap in bitmaps)
+                    bitmap.Dispose();
             }
 
             _statusLabel.Text = paths.Length == 1
@@ -1554,13 +1545,6 @@ internal sealed class ControlForm : Form
         }
         finally
         {
-            foreach (MirrorForm mirrorWindow in _mirrorWindows)
-                mirrorWindow.SetCaptureExclusion(true);
-            foreach (StatusOverlayForm overlay in _statusOverlays)
-                overlay.SetCaptureExclusion(true);
-            foreach (AnalysisOverlayForm overlay in _analysisOverlays)
-                overlay.SetCaptureExclusion(true);
-            NativeMethods.DwmFlush();
             _takingScreenshot = false;
         }
 
@@ -1568,6 +1552,86 @@ internal sealed class ControlForm : Form
         {
             foreach (AnalysisOverlayForm overlay in _analysisOverlays)
                 overlay.ShowScreenshotNotification();
+        }
+    }
+
+    private static Bitmap[] ConvertScreenshotFrames(
+        IReadOnlyList<HdrScreenshotFrame> frames,
+        float paperWhiteNits,
+        bool falseColorEnabled)
+    {
+        Bitmap[] bitmaps = new Bitmap[frames.Count];
+        try
+        {
+            for (int i = 0; i < frames.Count; i++)
+            {
+                bitmaps[i] = HdrScreenshotCapture.ConvertToSdrBitmap(
+                    frames[i],
+                    paperWhiteNits,
+                    falseColorEnabled);
+            }
+            return bitmaps;
+        }
+        catch
+        {
+            foreach (Bitmap? bitmap in bitmaps)
+                bitmap?.Dispose();
+            throw;
+        }
+    }
+
+    private void CompositeScreenshotOverlays(Bitmap bitmap, int outputIndex)
+    {
+        if (outputIndex >= _mirrorWindows.Count)
+            return;
+
+        Rectangle mirrorBounds = _mirrorWindows[outputIndex].Bounds;
+        if (mirrorBounds.Width <= 0 || mirrorBounds.Height <= 0)
+            return;
+
+        float scaleX = bitmap.Width / (float)mirrorBounds.Width;
+        float scaleY = bitmap.Height / (float)mirrorBounds.Height;
+        using Graphics graphics = Graphics.FromImage(bitmap);
+        graphics.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceOver;
+        graphics.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighQuality;
+        graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+        graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+
+        if (outputIndex < _statusOverlays.Count && _statusOverlays[outputIndex].Visible)
+        {
+            StatusOverlayForm overlay = _statusOverlays[outputIndex];
+            using Bitmap panel = overlay.RenderScreenshotBitmap();
+            Rectangle destination = new(
+                (int)Math.Round((overlay.Bounds.Left - mirrorBounds.Left) * scaleX),
+                (int)Math.Round((overlay.Bounds.Top - mirrorBounds.Top) * scaleY),
+                Math.Max(1, (int)Math.Round(overlay.Bounds.Width * scaleX)),
+                Math.Max(1, (int)Math.Round(overlay.Bounds.Height * scaleY)));
+            using ImageAttributes opacity = new();
+            ColorMatrix matrix = new() { Matrix33 = (float)overlay.Opacity };
+            opacity.SetColorMatrix(matrix, ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
+            graphics.DrawImage(
+                panel,
+                destination,
+                0,
+                0,
+                panel.Width,
+                panel.Height,
+                GraphicsUnit.Pixel,
+                opacity);
+        }
+
+        if (outputIndex < _analysisOverlays.Count && _analysisOverlays[outputIndex].Visible)
+        {
+            AnalysisOverlayForm overlay = _analysisOverlays[outputIndex];
+            System.Drawing.Drawing2D.GraphicsState state = graphics.Save();
+            graphics.TranslateTransform(
+                (overlay.Bounds.Left - mirrorBounds.Left) * scaleX,
+                (overlay.Bounds.Top - mirrorBounds.Top) * scaleY);
+            graphics.ScaleTransform(
+                bitmap.Width / (float)Math.Max(overlay.ClientSize.Width, 1),
+                bitmap.Height / (float)Math.Max(overlay.ClientSize.Height, 1));
+            overlay.DrawScreenshot(graphics);
+            graphics.Restore(state);
         }
     }
 

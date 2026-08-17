@@ -47,6 +47,7 @@ It now includes a complete suite of HDR analysis tools.
 11. Three frame rate policies: follow the output display, fixed limit, and unlimited.
 12. Automatic session recovery and layout adaptation after Windows resolution or display mode changes.
 13. OLED ABL luminance estimation from user supplied window luminance measurements, including estimated average, maximum, and minimum frame luminance after ABL.
+14. SDR PNG capture of the rendered HDR mirror output, including visible analysis panels, luminance markers, and the rendered output cursor.
 
 ## Requirements
 
@@ -168,11 +169,11 @@ Profiles can be created, duplicated, renamed, deleted, and saved. The active pro
 
 ## Output screenshots
 
-After multi display mirroring starts, press `Ctrl + F10` to capture the image actually shown on every output display. A brief confirmation appears on the output display after the files are saved. The PNG includes the false color view, visible status panel, real time gamut analysis panel, and luminance markers. Multiple output displays are saved as separate images. Output image capture is unavailable in single display analysis.
+After multi display mirroring starts, press `Ctrl + F10` to capture the fully rendered mirror image for every output display. A brief confirmation appears on the output display after the files are saved. The PNG includes the actual scaling and black bars, rendered output cursor, false color view, visible status panel, real time gamut analysis panel, and luminance markers. Multiple output displays are saved as separate images. Output image capture is unavailable in single display analysis.
 
 “Save automatically” writes images directly to the configured folder. The default is a `Screenshots` folder beside `HDRScreenMirror.exe`. “Choose a location each time” opens a save dialog after the hotkey is pressed.
 
-The output windows are normally excluded from Windows screen capture protection, so a system screenshot tool may not see them. The built in capture briefly removes that exclusion while taking the image and restores it immediately afterward. PNG files are visual records of the false color analysis and do not contain the original FP16 HDR data.
+The output windows are normally excluded from Windows screen capture, so a system screenshot tool may not see them. The built in capture does not use a system screenshot or recapture the output desktop. It reads the application's own FP16 mirror output, tone maps HDR to SDR, and saves a standard PNG. Analysis panels and luminance markers are composited after conversion. The PNG is suitable for viewing and recording analysis results, but it does not contain the original FP16 HDR data.
 
 ## System tray
 
@@ -210,6 +211,10 @@ Analysis overlays automatically recover their window level over applications tha
 4. HDR single display analysis overlays cannot cover exclusive fullscreen applications or applications that use an independent presentation path.
 
 ## Changelog
+
+### 1.7.1
+
+1. Fixed overexposed screenshots when playing HDR content.
 
 ### 1.7.0
 

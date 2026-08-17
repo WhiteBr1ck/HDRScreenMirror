@@ -165,15 +165,20 @@ internal sealed class AnalysisOverlayForm : Form
     protected override void OnPaint(PaintEventArgs eventArgs)
     {
         base.OnPaint(eventArgs);
-        eventArgs.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        eventArgs.Graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        DrawScreenshot(eventArgs.Graphics);
+    }
+
+    internal void DrawScreenshot(Graphics graphics)
+    {
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
         if (_showCie)
-            DrawCiePanel(eventArgs.Graphics);
+            DrawCiePanel(graphics);
         if (_showMarkers && _luminance is not null && _frameWidth > 0 && _frameHeight > 0)
-            DrawLuminanceMarkers(eventArgs.Graphics, _luminance);
+            DrawLuminanceMarkers(graphics, _luminance);
         if (_showScreenshotToast)
-            DrawScreenshotNotification(eventArgs.Graphics);
+            DrawScreenshotNotification(graphics);
     }
 
     private void DrawScreenshotNotification(Graphics graphics)

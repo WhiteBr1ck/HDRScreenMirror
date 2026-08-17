@@ -51,6 +51,8 @@ internal sealed class MirrorSession : IDisposable
     private readonly bool _analyzeLuminance;
     private readonly CancellationTokenSource _cancellation = new();
     private readonly TaskCompletionSource _initialized = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly object _screenshotRequestLock = new();
+    private TaskCompletionSource<IReadOnlyList<HdrScreenshotFrame>>? _pendingScreenshotRequest;
 
     private Thread? _renderThread;
     private bool _disposed;
@@ -186,6 +188,38 @@ internal sealed class MirrorSession : IDisposable
         Interlocked.Increment(ref _ablProfileVersion);
     }
 
+    public async Task<IReadOnlyList<HdrScreenshotFrame>> CaptureOutputFramesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_renderThread is null || _cancellation.IsCancellationRequested)
+            throw new InvalidOperationException("The mirror session has not started.");
+
+        TaskCompletionSource<IReadOnlyList<HdrScreenshotFrame>> request =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_screenshotRequestLock)
+        {
+            if (_pendingScreenshotRequest is not null)
+                throw new InvalidOperationException("A screenshot is already in progress.");
+            _pendingScreenshotRequest = request;
+        }
+
+        try
+        {
+            return await request.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            lock (_screenshotRequestLock)
+            {
+                if (ReferenceEquals(_pendingScreenshotRequest, request))
+                    _pendingScreenshotRequest = null;
+            }
+            throw;
+        }
+    }
+
     public void Start()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -229,6 +263,8 @@ internal sealed class MirrorSession : IDisposable
         }
         finally
         {
+            FailPendingScreenshotRequest(
+                new OperationCanceledException("The mirror session stopped before the screenshot completed."));
             DisposeDirectX();
             NativeMethods.SetThreadExecutionState(NativeMethods.EsContinuous);
             Stopped?.Invoke();
@@ -446,6 +482,11 @@ internal sealed class MirrorSession : IDisposable
                 break;
 
             bool rendered = AcquireAndRender(cancellationToken);
+            if (!rendered && HasPendingScreenshotRequest() && _frameView is not null && _presenters.Count > 0)
+            {
+                DrawFrame();
+                rendered = true;
+            }
             if (rendered)
             {
                 frames++;
@@ -714,33 +755,128 @@ internal sealed class MirrorSession : IDisposable
 
     private void DrawFrame()
     {
+        TaskCompletionSource<IReadOnlyList<HdrScreenshotFrame>>? screenshotRequest =
+            TakePendingScreenshotRequest();
+        List<HdrScreenshotFrame>? screenshotFrames = screenshotRequest is null
+            ? null
+            : new List<HdrScreenshotFrame>(_presenters.Count);
+
         _context!.UpdateSubresource(CreateMirrorConstants(), _constantBuffer!);
-        for (int i = 0; i < _presenters.Count; i++)
+        try
         {
-            OutputPresenter presenter = _presenters[i];
-            _context!.OMSetRenderTargets(presenter.RenderTarget);
-            _context.ClearRenderTargetView(presenter.RenderTarget, new Color4(0, 0, 0, 1));
-            _context.RSSetViewport(CalculateViewport(presenter));
-            _context.OMSetBlendState(_opaqueBlendState!);
-            _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
-            _context.VSSetShader(_vertexShader);
-            _context.PSSetShader(_pixelShader);
-            _context.PSSetShaderResource(0, _frameView!);
-            _context.PSSetSampler(0, _sampler);
-            _context.PSSetConstantBuffer(0, _constantBuffer);
-            _context.Draw(3, 0);
-            _context.PSSetShaderResource(0, null!);
+            for (int i = 0; i < _presenters.Count; i++)
+            {
+                OutputPresenter presenter = _presenters[i];
+                _context!.OMSetRenderTargets(presenter.RenderTarget);
+                _context.ClearRenderTargetView(presenter.RenderTarget, new Color4(0, 0, 0, 1));
+                _context.RSSetViewport(CalculateViewport(presenter));
+                _context.OMSetBlendState(_opaqueBlendState!);
+                _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
+                _context.VSSetShader(_vertexShader);
+                _context.PSSetShader(_pixelShader);
+                _context.PSSetShaderResource(0, _frameView!);
+                _context.PSSetSampler(0, _sampler);
+                _context.PSSetConstantBuffer(0, _constantBuffer);
+                _context.Draw(3, 0);
+                _context.PSSetShaderResource(0, null!);
 
-            DrawCursor(presenter);
+                DrawCursor(presenter);
+                if (screenshotFrames is not null)
+                    screenshotFrames.Add(CapturePresenterFrame(presenter));
 
-            uint syncInterval =
-                _frameRateMode != FrameRateMode.Unlimited && i == _presenters.Count - 1 ? 1u : 0u;
-            Result result = presenter.SwapChain.Present(syncInterval, PresentFlags.None);
-            result.CheckError();
+                uint syncInterval =
+                    _frameRateMode != FrameRateMode.Unlimited && i == _presenters.Count - 1 ? 1u : 0u;
+                Result result = presenter.SwapChain.Present(syncInterval, PresentFlags.None);
+                result.CheckError();
+            }
+
+            screenshotRequest?.TrySetResult(screenshotFrames!);
+        }
+        catch (Exception exception)
+        {
+            screenshotRequest?.TrySetException(exception);
+            throw;
         }
 
         _waitForOutputBeforeNextFrame =
             _presenters.Count > 0 && _frameRateMode != FrameRateMode.Unlimited;
+    }
+
+    private unsafe HdrScreenshotFrame CapturePresenterFrame(OutputPresenter presenter)
+    {
+        Texture2DDescription sourceDescription = presenter.BackBuffer.Description;
+        if (sourceDescription.Format != Format.R16G16B16A16_Float)
+            throw new NotSupportedException($"Unsupported mirror screenshot format: {sourceDescription.Format}.");
+
+        Texture2DDescription stagingDescription = new(
+            sourceDescription.Format,
+            sourceDescription.Width,
+            sourceDescription.Height,
+            1,
+            1,
+            BindFlags.None,
+            ResourceUsage.Staging,
+            CpuAccessFlags.Read,
+            1,
+            0,
+            ResourceOptionFlags.None);
+        using ID3D11Texture2D stagingTexture = _device!.CreateTexture2D(stagingDescription);
+        _context!.CopyResource(stagingTexture, presenter.BackBuffer);
+
+        MappedSubresource mapped = _context.Map(
+            stagingTexture,
+            0,
+            MapMode.Read,
+            Vortice.Direct3D11.MapFlags.None);
+        try
+        {
+            int width = checked((int)sourceDescription.Width);
+            int height = checked((int)sourceDescription.Height);
+            int packedStride = checked(width * HdrScreenshotFrame.BytesPerPixel);
+            byte[] pixels = new byte[checked(packedStride * height)];
+            fixed (byte* destinationBase = pixels)
+            {
+                byte* sourceBase = (byte*)mapped.DataPointer;
+                for (int y = 0; y < height; y++)
+                {
+                    Buffer.MemoryCopy(
+                        sourceBase + y * mapped.RowPitch,
+                        destinationBase + y * packedStride,
+                        packedStride,
+                        packedStride);
+                }
+            }
+
+            return new HdrScreenshotFrame(width, height, pixels);
+        }
+        finally
+        {
+            _context.Unmap(stagingTexture, 0);
+        }
+    }
+
+    private bool HasPendingScreenshotRequest()
+    {
+        lock (_screenshotRequestLock)
+            return _pendingScreenshotRequest is not null;
+    }
+
+    private TaskCompletionSource<IReadOnlyList<HdrScreenshotFrame>>? TakePendingScreenshotRequest()
+    {
+        lock (_screenshotRequestLock)
+        {
+            TaskCompletionSource<IReadOnlyList<HdrScreenshotFrame>>? request =
+                _pendingScreenshotRequest;
+            _pendingScreenshotRequest = null;
+            return request;
+        }
+    }
+
+    private void FailPendingScreenshotRequest(Exception exception)
+    {
+        TaskCompletionSource<IReadOnlyList<HdrScreenshotFrame>>? request =
+            TakePendingScreenshotRequest();
+        request?.TrySetException(exception);
     }
 
     private Viewport CalculateViewport(OutputPresenter presenter)

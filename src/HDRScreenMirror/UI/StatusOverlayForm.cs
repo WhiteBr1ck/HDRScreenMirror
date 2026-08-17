@@ -193,7 +193,32 @@ internal sealed class StatusOverlayForm : Form
     protected override void OnPaint(PaintEventArgs eventArgs)
     {
         base.OnPaint(eventArgs);
-        Graphics graphics = eventArgs.Graphics;
+        DrawPanel(eventArgs.Graphics);
+    }
+
+    internal Bitmap RenderScreenshotBitmap()
+    {
+        Bitmap bitmap = new(
+            Math.Max(ClientSize.Width, 1),
+            Math.Max(ClientSize.Height, 1),
+            System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using Graphics graphics = Graphics.FromImage(bitmap);
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.Clear(Color.Transparent);
+        using GraphicsPath backgroundPath = CreateRoundedRectangle(
+            new Rectangle(Point.Empty, bitmap.Size),
+            ScaleToDevice(OuterRadius));
+        using SolidBrush background = new(SurfaceColor);
+        graphics.FillPath(background, backgroundPath);
+        GraphicsState clipState = graphics.Save();
+        graphics.SetClip(backgroundPath);
+        DrawPanel(graphics);
+        graphics.Restore(clipState);
+        return bitmap;
+    }
+
+    private void DrawPanel(Graphics graphics)
+    {
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
         graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;

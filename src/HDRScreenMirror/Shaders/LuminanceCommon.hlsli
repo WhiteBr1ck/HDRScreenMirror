@@ -29,7 +29,7 @@ float3 Rec2020ToRec709(float3 value)
 float3 DecodeInputToNits(float4 source, uint inputMode, float paperWhiteNits)
 {
     if (inputMode == 0)
-        return max(source.rgb * 80.0, 0.0);
+        return source.rgb * 80.0;
 
     if (inputMode == 2)
     {
