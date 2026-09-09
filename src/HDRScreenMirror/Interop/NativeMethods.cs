@@ -22,7 +22,6 @@ internal static partial class NativeMethods
     internal const uint WaitTimeout = 0x00000102;
     internal const uint WaitFailed = 0xFFFFFFFF;
 
-    private static readonly nint DpiAwarenessContextPerMonitorAwareV2 = new(-4);
     private static readonly nint HwndTopMost = new(-1);
     private const uint CreateWaitableTimerHighResolution = 0x00000002;
     private const uint TimerAllAccess = 0x001F0003;
@@ -33,10 +32,6 @@ internal static partial class NativeMethods
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpNoOwnerZOrder = 0x0200;
     private const uint SwpNoSendChanging = 0x0400;
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetProcessDpiAwarenessContext(nint value);
 
     [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -133,17 +128,6 @@ internal static partial class NativeMethods
     [LibraryImport("kernel32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool AttachConsole(uint processId);
-
-    internal static void TryEnablePerMonitorDpiAwareness()
-    {
-        try
-        {
-            SetProcessDpiAwarenessContext(DpiAwarenessContextPerMonitorAwareV2);
-        }
-        catch (EntryPointNotFoundException)
-        {
-        }
-    }
 
     internal static nint CreateFrameRateTimer()
     {

@@ -42,7 +42,7 @@ internal sealed class MirrorSession : IDisposable
     private readonly FrameRateMode _frameRateMode;
     private readonly int _frameRateLimit;
     private readonly bool _renderCursor;
-    private int _falseColorEnabled;
+    private int _falseColorMode;
     private int _gamutAnalysisEnabled;
     private AblProfile? _ablProfile;
     private float[] _ablEotfLut = CreateDefaultEotfLut();
@@ -163,7 +163,7 @@ internal sealed class MirrorSession : IDisposable
             ? AnalysisOnlyFollowOutputFps
             : Math.Clamp(frameRateLimit, 24, 500);
         _renderCursor = renderCursor;
-        _falseColorEnabled = falseColor ? 1 : 0;
+        _falseColorMode = falseColor ? (int)FalseColorMode.Luminance : (int)FalseColorMode.None;
         _analyzeLuminance = analyzeLuminance;
     }
 
@@ -175,7 +175,10 @@ internal sealed class MirrorSession : IDisposable
     public event Action? Stopped;
 
     public void SetFalseColor(bool enabled) =>
-        Volatile.Write(ref _falseColorEnabled, enabled ? 1 : 0);
+        SetFalseColorMode(enabled ? FalseColorMode.Luminance : FalseColorMode.None);
+
+    public void SetFalseColorMode(FalseColorMode mode) =>
+        Volatile.Write(ref _falseColorMode, (int)mode);
 
     public void SetGamutAnalysis(bool enabled) =>
         Volatile.Write(ref _gamutAnalysisEnabled, enabled ? 1 : 0);
@@ -1013,8 +1016,8 @@ internal sealed class MirrorSession : IDisposable
         Viewport imageViewport = CalculateViewport(presenter);
         float sourceWidth = _rotationCode is 1 or 3 ? _frameHeight : _frameWidth;
         float scale = imageViewport.Width / sourceWidth;
-        float x = imageViewport.X + (_cursorX - _cursorHotSpotX) * scale;
-        float y = imageViewport.Y + (_cursorY - _cursorHotSpotY) * scale;
+        float x = imageViewport.X + _cursorX * scale;
+        float y = imageViewport.Y + _cursorY * scale;
         CursorConstants constants = new(
             x,
             y,
@@ -1049,7 +1052,7 @@ internal sealed class MirrorSession : IDisposable
             PaperWhiteNits = _paperWhiteNits,
             InputMode = _inputMode,
             Rotation = (uint)_rotationCode,
-            FalseColorEnabled = Volatile.Read(ref _falseColorEnabled) != 0 ? 1u : 0u,
+            FalseColorMode = (uint)Volatile.Read(ref _falseColorMode),
             FrameWidth = _frameWidth,
             FrameHeight = _frameHeight,
             PointerX = _probePointerX,
@@ -1504,7 +1507,7 @@ internal sealed class MirrorSession : IDisposable
         public float PaperWhiteNits;
         public uint InputMode;
         public uint Rotation;
-        public uint FalseColorEnabled;
+        public uint FalseColorMode;
         public uint FrameWidth;
         public uint FrameHeight;
         public int PointerX;
@@ -1571,6 +1574,8 @@ internal sealed class MirrorSession : IDisposable
             RenderTarget.Dispose();
             BackBuffer.Dispose();
             SwapChain.Dispose();
+            if (FrameLatencyWaitableObject != nint.Zero)
+                NativeMethods.CloseHandle(FrameLatencyWaitableObject);
         }
     }
 }

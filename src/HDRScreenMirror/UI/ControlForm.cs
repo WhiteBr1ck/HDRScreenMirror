@@ -60,6 +60,7 @@ internal sealed class ControlForm : Form
     private readonly CheckBox _renderCursor = CreateOptionCheckBox("RenderCursor", true);
     private readonly CheckBox _showPointerLuminance = CreateOptionCheckBox("ShowPointerLuminance", true);
     private readonly CheckBox _falseColor = CreateOptionCheckBox("FalseColor", false);
+    private readonly CheckBox _gamutFalseColor = CreateOptionCheckBox("GamutFalseColor", false);
     private readonly CheckBox _showLuminanceMarkers = CreateOptionCheckBox("LuminanceMarkers", false);
     private readonly CheckBox _showAblEstimate;
     private readonly ComboBox _ablProfileCombo = new()
@@ -141,6 +142,7 @@ internal sealed class ControlForm : Form
     private bool _updatingModeSelection;
     private bool _updatingAblProfileSelection;
     private bool _updatingDisplaySelection;
+    private bool _updatingFalseColorSelection;
     private bool _takingScreenshot;
     private bool _singleDisplayAnalysis;
     private bool _controlWindowCaptureExcluded;
@@ -156,6 +158,7 @@ internal sealed class ControlForm : Form
         Height = 920;
         MinimumSize = new Size(1120, 728);
         StartPosition = FormStartPosition.CenterScreen;
+        AutoScaleDimensions = new SizeF(96f, 96f);
         AutoScaleMode = AutoScaleMode.Dpi;
         BackColor = Color.FromArgb(248, 249, 251);
 
@@ -187,7 +190,7 @@ internal sealed class ControlForm : Form
         InitializeFrameRateSelector();
         InitializeOperationModeSelector();
         InitializeAblProfiles();
-        Controls.Add(BuildLayout());
+        Controls.Add(BuildScrollableLayout());
         ApplyLanguage();
 
         _refreshButton.Click += (_, _) => RefreshDisplays();
@@ -200,7 +203,8 @@ internal sealed class ControlForm : Form
         _allOutputs.CheckedChanged += (_, _) => UpdatePresentSelectorState();
         _showStatusOverlay.CheckedChanged += (_, _) => UpdateStatusOverlayVisibility();
         _showPointerLuminance.CheckedChanged += (_, _) => UpdatePointerLuminanceVisibility();
-        _falseColor.CheckedChanged += (_, _) => UpdateFalseColorMode();
+        _falseColor.CheckedChanged += (_, _) => UpdateFalseColorMode(FalseColorMode.Luminance);
+        _gamutFalseColor.CheckedChanged += (_, _) => UpdateFalseColorMode(FalseColorMode.Gamut);
         _showLuminanceMarkers.CheckedChanged += (_, _) => UpdateLuminanceMarkerVisibility();
         _showAblEstimate.CheckedChanged += (_, _) => ChangeAblEstimation();
         _ablProfileCombo.SelectedIndexChanged += (_, _) => ChangeAblProfile();
@@ -223,11 +227,26 @@ internal sealed class ControlForm : Form
         Shown += (_, _) => RefreshDisplays();
     }
 
+    private Control BuildScrollableLayout()
+    {
+        Panel host = new()
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            BackColor = Color.FromArgb(248, 249, 251)
+        };
+        Control layout = BuildLayout();
+        host.Controls.Add(layout);
+        return host;
+    }
+
     private Control BuildLayout()
     {
         TableLayoutPanel layout = new()
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Padding = new Padding(20, 18, 20, 18),
             ColumnCount = 2,
             RowCount = 12,
@@ -246,7 +265,7 @@ internal sealed class ControlForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 176));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 140));
 
         layout.Controls.Add(CreateLabel("CaptureDisplay"), 0, 0);
         layout.Controls.Add(BuildCaptureSelector(), 1, 0);
@@ -448,6 +467,7 @@ internal sealed class ControlForm : Form
     private Control BuildColorAnalysisOptions()
     {
         FlowLayoutPanel row = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
+        row.Controls.Add(_gamutFalseColor);
         row.Controls.Add(_showCieAnalysis);
         return row;
     }
@@ -1176,6 +1196,7 @@ internal sealed class ControlForm : Form
 
             AblProfile? activeAblProfile =
                 _showAblEstimate.Checked ? GetActiveAblProfile() : null;
+            FalseColorMode falseColorMode = analysisOnly ? FalseColorMode.None : GetFalseColorMode();
             PositionOnCaptureDisplay(capture);
             if (!analysisOnly && moveOutputWindows && _moveOutputWindows.Checked)
             {
@@ -1202,8 +1223,9 @@ internal sealed class ControlForm : Form
                     target,
                     analysisOnly || _mouseThrough.Checked,
                     _showPointerLuminance.Checked,
-                    !analysisOnly && _falseColor.Checked,
+                    falseColorMode == FalseColorMode.Luminance,
                     analysisOnly: analysisOnly);
+                overlay.SetFalseColorMode(falseColorMode);
                 overlay.SetAblEstimate(
                     activeAblProfile is not null,
                     activeAblProfile?.Name ?? string.Empty);
@@ -1240,8 +1262,9 @@ internal sealed class ControlForm : Form
                 GetFrameRateMode(),
                 decimal.ToInt32(_frameRateLimit.Value),
                 analysisOnly || _renderCursor.Checked,
-                !analysisOnly && _falseColor.Checked,
+                falseColorMode == FalseColorMode.Luminance,
                 true);
+            _session.SetFalseColorMode(falseColorMode);
             _session.StatusChanged += OnSessionStatusChanged;
             _session.TelemetryChanged += OnSessionTelemetryChanged;
             _session.LuminanceChanged += OnSessionLuminanceChanged;
@@ -1376,6 +1399,7 @@ internal sealed class ControlForm : Form
         _renderCursor.Enabled = !running && !analysisMode;
         _showPointerLuminance.Enabled = true;
         _falseColor.Enabled = !analysisMode;
+        _gamutFalseColor.Enabled = !analysisMode;
         _showLuminanceMarkers.Enabled = true;
         UpdateAblControlsState();
         _showCieAnalysis.Enabled = true;
@@ -1443,12 +1467,35 @@ internal sealed class ControlForm : Form
             overlay.SetShowPointerLuminance(_showPointerLuminance.Checked);
     }
 
-    private void UpdateFalseColorMode()
+    private FalseColorMode GetFalseColorMode() =>
+        _gamutFalseColor.Checked
+            ? FalseColorMode.Gamut
+            : _falseColor.Checked
+                ? FalseColorMode.Luminance
+                : FalseColorMode.None;
+
+    private void UpdateFalseColorMode(FalseColorMode changedMode)
     {
-        bool enabled = !_singleDisplayAnalysis && _falseColor.Checked;
-        _session?.SetFalseColor(enabled);
+        if (_updatingFalseColorSelection)
+            return;
+
+        _updatingFalseColorSelection = true;
+        try
+        {
+            if (changedMode == FalseColorMode.Luminance && _falseColor.Checked)
+                _gamutFalseColor.Checked = false;
+            else if (changedMode == FalseColorMode.Gamut && _gamutFalseColor.Checked)
+                _falseColor.Checked = false;
+        }
+        finally
+        {
+            _updatingFalseColorSelection = false;
+        }
+
+        FalseColorMode mode = _singleDisplayAnalysis ? FalseColorMode.None : GetFalseColorMode();
+        _session?.SetFalseColorMode(mode);
         foreach (StatusOverlayForm overlay in _statusOverlays)
-            overlay.SetFalseColor(enabled);
+            overlay.SetFalseColorMode(mode);
     }
 
     private void UpdateLuminanceMarkerVisibility()
@@ -1508,7 +1555,7 @@ internal sealed class ControlForm : Form
                 throw new InvalidOperationException("The mirror outputs changed while taking the screenshot.");
 
             float paperWhiteNits = (float)_paperWhite.Value;
-            bool falseColorEnabled = _falseColor.Checked;
+            bool falseColorEnabled = GetFalseColorMode() != FalseColorMode.None;
             Bitmap[] bitmaps = await Task.Run(() => ConvertScreenshotFrames(
                 frames,
                 paperWhiteNits,
