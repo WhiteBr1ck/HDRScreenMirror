@@ -1,0 +1,37 @@
+name: Apply core fixes
+
+on:
+  push:
+    branches: [fix/stability-dpi-gamut]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/stability-dpi-gamut
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Apply source fixes
+        run: python tools/apply_core_fixes.py
+      - name: Compile shaders
+        shell: pwsh
+        run: ./src/HDRScreenMirror/Shaders/CompileShaders.ps1
+      - name: Build
+        run: dotnet build HDRScreenMirror.sln -c Release -p:Platform=x64
+      - name: Commit validated fixes
+        shell: pwsh
+        run: |
+          git rm tools/apply_core_fixes.py .github/workflows/apply-core-fixes.yml
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix: stabilize DPI rendering and add gamut false color"
+          git push origin HEAD:fix/stability-dpi-gamut
