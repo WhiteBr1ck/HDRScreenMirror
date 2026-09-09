@@ -10,8 +10,6 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        NativeMethods.TryEnablePerMonitorDpiAwareness();
-
         if (args.Any(x => string.Equals(x, "--list", StringComparison.OrdinalIgnoreCase)))
         {
             NativeMethods.AttachToParentConsole();

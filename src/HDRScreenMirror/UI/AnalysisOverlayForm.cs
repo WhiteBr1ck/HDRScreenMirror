@@ -25,6 +25,7 @@ internal sealed class AnalysisOverlayForm : Form
 
     private readonly bool _excludeFromCapture;
     private readonly ModeRotation _rotation;
+    private readonly Rectangle _outputBounds;
     private readonly Font _titleFont = new("Segoe UI", 11f, FontStyle.Bold);
     private readonly Font _bodyFont = new("Segoe UI", 9.5f, FontStyle.Regular);
     private readonly Font _smallFont = new("Segoe UI", 8.5f, FontStyle.Regular);
@@ -48,6 +49,7 @@ internal sealed class AnalysisOverlayForm : Form
         bool excludeFromCapture = true)
     {
         _rotation = capture.Rotation;
+        _outputBounds = outputBounds;
         _showCie = showCie;
         _showMarkers = showMarkers;
         _excludeFromCapture = excludeFromCapture;
@@ -55,6 +57,7 @@ internal sealed class AnalysisOverlayForm : Form
         Text = "HDRScreenMirror Analysis";
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
+        AutoScaleMode = AutoScaleMode.None;
         Bounds = outputBounds;
         TopMost = true;
         ShowInTaskbar = false;
@@ -155,6 +158,13 @@ internal sealed class AnalysisOverlayForm : Form
             Handle,
             excluded ? NativeMethods.WdaExcludeFromCapture : NativeMethods.WdaNone);
         return applied;
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs eventArgs)
+    {
+        base.OnDpiChanged(eventArgs);
+        Bounds = _outputBounds;
+        Invalidate();
     }
 
     protected override void OnPaintBackground(PaintEventArgs eventArgs)

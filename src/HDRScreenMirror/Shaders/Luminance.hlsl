@@ -5,7 +5,7 @@ cbuffer MirrorConstants : register(b0)
     float PaperWhiteNits;
     uint InputMode;
     uint Rotation;
-    uint FalseColorEnabled;
+    uint FalseColorMode;
     uint FrameWidth;
     uint FrameHeight;
     int PointerX;
@@ -49,6 +49,7 @@ groupshared float SharedClippedSum[256];
 groupshared float SharedClippedMinimum[256];
 groupshared float SharedClippedMaximum[256];
 groupshared float SharedLuminanceTile[400];
+groupshared float SharedClippedLuminanceTile[400];
 groupshared uint SharedValidityTile[400];
 
 float PqOetfFromNits(float luminanceNits)
@@ -108,6 +109,7 @@ void CSFrameStats(
                 InputMode);
         }
         SharedLuminanceTile[tileIndex] = tileLuminance;
+        SharedClippedLuminanceTile[tileIndex] = tileValid ? ApplyAblEotf(tileLuminance) : 0.0;
         SharedValidityTile[tileIndex] = tileValid ? 1 : 0;
     }
     GroupMemoryBarrierWithGroupSync();
@@ -115,7 +117,7 @@ void CSFrameStats(
     bool valid = dispatchThreadId.x < FrameWidth && dispatchThreadId.y < FrameHeight;
     uint centerIndex = (groupThreadId.y + 2) * 20 + groupThreadId.x + 2;
     float luminance = valid ? SharedLuminanceTile[centerIndex] : 0.0;
-    float clippedLuminance = ApplyAblEotf(luminance);
+    float clippedLuminance = valid ? SharedClippedLuminanceTile[centerIndex] : 0.0;
     float regionAverage = 0.0;
     float clippedRegionAverage = 0.0;
     if (valid)
@@ -129,7 +131,7 @@ void CSFrameStats(
             {
                 uint tileIndex = (groupThreadId.y + y) * 20 + groupThreadId.x + x;
                 regionSum += SharedLuminanceTile[tileIndex];
-                clippedRegionSum += ApplyAblEotf(SharedLuminanceTile[tileIndex]);
+                clippedRegionSum += SharedClippedLuminanceTile[tileIndex];
                 regionCount += SharedValidityTile[tileIndex];
             }
         }

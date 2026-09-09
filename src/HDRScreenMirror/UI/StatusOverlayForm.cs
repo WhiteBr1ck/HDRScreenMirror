@@ -1,5 +1,6 @@
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
+using HDRScreenMirror.DirectX;
 using HDRScreenMirror.Interop;
 
 namespace HDRScreenMirror.UI;
@@ -9,7 +10,6 @@ internal sealed class StatusOverlayForm : Form
     private const int WsExTransparent = 0x00000020;
     private const int WsExToolWindow = 0x00000080;
     private const int WsExNoActivate = 0x08000000;
-    private const int HighDpiLayoutBaseline = 144;
     private const int PanelWidth = 540;
     private const int OuterPadding = 20;
     private const int OuterRadius = 20;
@@ -38,7 +38,7 @@ internal sealed class StatusOverlayForm : Form
     private Font _footerFont = CreatePixelFont(10.67f, FontStyle.Regular);
 
     private bool _showPointerLuminance;
-    private bool _falseColor;
+    private FalseColorMode _falseColorMode;
     private bool _showAblEstimate;
     private string _ablProfileName = string.Empty;
     private bool _hasTelemetry;
@@ -67,7 +67,7 @@ internal sealed class StatusOverlayForm : Form
         _analysisOnly = analysisOnly;
         _outputBounds = outputBounds;
         _showPointerLuminance = showPointerLuminance;
-        _falseColor = falseColor;
+        _falseColorMode = falseColor ? FalseColorMode.Luminance : FalseColorMode.None;
         _captureName = capture.DisplayName;
         _presentName = present.DisplayName;
         _route = CreateRouteText();
@@ -128,12 +128,15 @@ internal sealed class StatusOverlayForm : Form
         ResizeForContent();
     }
 
-    public void SetFalseColor(bool enabled)
+    public void SetFalseColor(bool enabled) =>
+        SetFalseColorMode(enabled ? FalseColorMode.Luminance : FalseColorMode.None);
+
+    public void SetFalseColorMode(FalseColorMode mode)
     {
-        if (_falseColor == enabled)
+        if (_falseColorMode == mode)
             return;
 
-        _falseColor = enabled;
+        _falseColorMode = mode;
         ResizeForContent();
     }
 
@@ -319,8 +322,10 @@ internal sealed class StatusOverlayForm : Form
             nextY += pointerCardHeight + 10;
         }
 
-        if (_falseColor)
+        if (_falseColorMode == FalseColorMode.Luminance)
             DrawFalseColorLegend(graphics, nextY);
+        else if (_falseColorMode == FalseColorMode.Gamut)
+            DrawGamutFalseColorLegend(graphics, nextY);
     }
 
     private int DrawAblSection(Graphics graphics, int y)
@@ -534,6 +539,52 @@ internal sealed class StatusOverlayForm : Form
         }
     }
 
+    private void DrawGamutFalseColorLegend(Graphics graphics, int y)
+    {
+        using SolidBrush sectionBrush = new(SecondaryTextColor);
+        graphics.DrawString(
+            Localization.T("OverlayGamutFalseColor"),
+            _sectionFont,
+            sectionBrush,
+            OuterPadding,
+            y);
+
+        Color[] colors =
+        [
+            Color.FromArgb(71, 214, 255),
+            Color.FromArgb(255, 213, 79),
+            Color.FromArgb(229, 105, 255),
+            Color.FromArgb(255, 65, 51)
+        ];
+        string[] labels = ["sRGB", "P3+", "BT.2020+", Localization.T("CieOutside")];
+        int legendY = y + 23;
+        int legendWidth = PanelWidth - OuterPadding * 2;
+        int segmentWidth = legendWidth / colors.Length;
+        Rectangle legendBounds = new(OuterPadding, legendY, legendWidth, 13);
+        using GraphicsPath clipPath = CreateRoundedRectangle(legendBounds, 6);
+        GraphicsState state = graphics.Save();
+        graphics.SetClip(clipPath);
+        for (int i = 0; i < colors.Length; i++)
+        {
+            int width = i == colors.Length - 1 ? legendWidth - segmentWidth * i : segmentWidth + 1;
+            using SolidBrush brush = new(colors[i]);
+            graphics.FillRectangle(brush, OuterPadding + i * segmentWidth, legendY, width, 13);
+        }
+        graphics.Restore(state);
+
+        using SolidBrush labelBrush = new(MutedTextColor);
+        using StringFormat centered = new() { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Near };
+        for (int i = 0; i < labels.Length; i++)
+        {
+            Rectangle labelBounds = new(
+                OuterPadding + i * segmentWidth,
+                legendY + 16,
+                i == labels.Length - 1 ? legendWidth - i * segmentWidth : segmentWidth,
+                18);
+            graphics.DrawString(labels[i], _footerFont, labelBrush, labelBounds, centered);
+        }
+    }
+
     private void DrawFooter(Graphics graphics)
     {
         int footerY = CalculatePanelHeight() - 29;
@@ -553,7 +604,7 @@ internal sealed class StatusOverlayForm : Form
             height += 133;
         if (_showPointerLuminance)
             height += _showAblEstimate ? 72 : 50;
-        if (_falseColor)
+        if (_falseColorMode != FalseColorMode.None)
             height += 68;
         return height;
     }
@@ -567,9 +618,8 @@ internal sealed class StatusOverlayForm : Form
 
     private void ApplyDpi(int dpi)
     {
-        float newScale = Math.Max(1f, dpi / (float)HighDpiLayoutBaseline);
-        _dpiScale = newScale;
-        RecreateFonts(dpi);
+        _dpiScale = Math.Max(0.5f, dpi / 96f);
+        RecreateFonts();
         int panelWidth = ScaleToDevice(PanelWidth);
         int panelX = _outputBounds.Left + ScaleToDevice(24);
         Bounds = new Rectangle(
@@ -581,16 +631,15 @@ internal sealed class StatusOverlayForm : Form
         Invalidate();
     }
 
-    private void RecreateFonts(int dpi)
+    private void RecreateFonts()
     {
-        float pixelScale = dpi / 96f / _dpiScale;
-        ReplaceFont(ref _titleFont, 11.33f * pixelScale, FontStyle.Bold);
-        ReplaceFont(ref _stateFont, 11.33f * pixelScale, FontStyle.Bold);
-        ReplaceFont(ref _bodyFont, 12f * pixelScale, FontStyle.Regular);
-        ReplaceFont(ref _sectionFont, 11.33f * pixelScale, FontStyle.Bold);
-        ReplaceFont(ref _captionFont, 10.67f * pixelScale, FontStyle.Regular);
-        ReplaceFont(ref _valueFont, 16f * pixelScale, FontStyle.Bold);
-        ReplaceFont(ref _footerFont, 10.67f * pixelScale, FontStyle.Regular);
+        ReplaceFont(ref _titleFont, 11.33f, FontStyle.Bold);
+        ReplaceFont(ref _stateFont, 11.33f, FontStyle.Bold);
+        ReplaceFont(ref _bodyFont, 12f, FontStyle.Regular);
+        ReplaceFont(ref _sectionFont, 11.33f, FontStyle.Bold);
+        ReplaceFont(ref _captionFont, 10.67f, FontStyle.Regular);
+        ReplaceFont(ref _valueFont, 16f, FontStyle.Bold);
+        ReplaceFont(ref _footerFont, 10.67f, FontStyle.Regular);
     }
 
     private static void ReplaceFont(ref Font font, float size, FontStyle style)

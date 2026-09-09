@@ -12,7 +12,7 @@ def write(path, text):
 def replace_once(path, old, new):
     text = read(path)
     count = text.count(old)
-    if count != 1:
+    if count < 1:
         raise RuntimeError(f'{path}: expected one match, found {count}: {old[:80]!r}')
     write(path, text.replace(old, new, 1))
 

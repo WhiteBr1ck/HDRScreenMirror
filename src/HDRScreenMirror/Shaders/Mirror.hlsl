@@ -3,7 +3,7 @@ cbuffer MirrorConstants : register(b0)
     float PaperWhiteNits;
     uint InputMode;
     uint Rotation;
-    uint FalseColorEnabled;
+    uint FalseColorMode;
     uint FrameWidth;
     uint FrameHeight;
     int PointerX;
@@ -13,6 +13,7 @@ cbuffer MirrorConstants : register(b0)
 };
 
 #include "LuminanceCommon.hlsli"
+#include "GamutCommon.hlsli"
 
 Texture2D<float4> SourceTexture : register(t0);
 Texture2D<float4> CursorTexture : register(t1);
@@ -56,10 +57,21 @@ float4 PSMain(VertexOutput input) : SV_Target
     float4 source = SourceTexture.Sample(LinearSampler, RotateUV(input.UV));
     float3 rgbNits = DecodeInputToNits(source, InputMode, PaperWhiteNits);
 
-    if (FalseColorEnabled != 0)
+    if (FalseColorMode == 1)
     {
         float luminanceNits = CalculateLuminanceNits(rgbNits, InputMode);
         float3 falseColorSrgb = MapNitsToFalseColor(luminanceNits);
+        return float4(SrgbToLinear(falseColorSrgb) * (PaperWhiteNits / 80.0), 1.0);
+    }
+
+    if (FalseColorMode == 2)
+    {
+        float luminanceNits = CalculateLuminanceNits(rgbNits, InputMode);
+        if (luminanceNits < 0.01)
+            return float4(0.0, 0.0, 0.0, 1.0);
+        float3 linearRgb = DecodeLinearRgbForGamut(source, InputMode);
+        uint category = ClassifyGamut(linearRgb, InputMode);
+        float3 falseColorSrgb = MapGamutCategoryToFalseColor(category);
         return float4(SrgbToLinear(falseColorSrgb) * (PaperWhiteNits / 80.0), 1.0);
     }
 
