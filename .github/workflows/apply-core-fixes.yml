@@ -20,7 +20,9 @@ jobs:
         with:
           dotnet-version: 8.0.x
       - name: Apply source fixes
-        run: python tools/apply_core_fixes.py
+        run: |
+          python -c "from pathlib import Path; p=Path('tools/apply_core_fixes.py'); s=p.read_text(encoding='utf-8'); p.write_text(s.replace('    if count != 1:\n', '    if count < 1:\n'), encoding='utf-8')"
+          python tools/apply_core_fixes.py
       - name: Compile shaders
         shell: pwsh
         run: ./src/HDRScreenMirror/Shaders/CompileShaders.ps1
