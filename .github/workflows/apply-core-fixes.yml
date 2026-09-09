@@ -23,6 +23,17 @@ jobs:
         run: |
           python -c "from pathlib import Path; p=Path('tools/apply_core_fixes.py'); s=p.read_text(encoding='utf-8'); p.write_text(s.replace('    if count != 1:\n', '    if count < 1:\n'), encoding='utf-8')"
           python tools/apply_core_fixes.py
+      - name: Remove legacy gamut helpers
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+          path = Path('src/HDRScreenMirror/Shaders/Gamut.hlsl')
+          text = path.read_text(encoding='utf-8')
+          start = text.index('float3 DecodeLinearRgb(float4 source)\n')
+          end = text.index('[numthreads(256, 1, 1)]', start)
+          path.write_text(text[:start] + text[end:], encoding='utf-8', newline='\n')
+          '@ | python -
       - name: Compile shaders
         shell: pwsh
         run: ./src/HDRScreenMirror/Shaders/CompileShaders.ps1
