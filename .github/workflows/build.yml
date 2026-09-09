@@ -1,0 +1,41 @@
+name: Windows build
+
+on:
+  pull_request:
+  push:
+    branches: [main, fix/stability-dpi-gamut]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build
+        run: dotnet build HDRScreenMirror.sln -c Release -p:Platform=x64
+      - name: Upload source snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-${{ github.sha }}
+          path: |
+            src/HDRScreenMirror/**/*.cs
+            src/HDRScreenMirror/**/*.csproj
+            src/HDRScreenMirror/Shaders/*
+            HDRScreenMirror.sln
+            README*.md
+          retention-days: 3
+      - name: Upload application
+        uses: actions/upload-artifact@v4
+        with:
+          name: HDRScreenMirror-win-x64
+          path: src/HDRScreenMirror/bin/x64/Release/net8.0-windows/
+          if-no-files-found: error
+          retention-days: 14
