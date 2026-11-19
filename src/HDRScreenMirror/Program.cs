@@ -13,6 +13,7 @@ internal static class Program
         if (args.Any(x => string.Equals(x, "--list", StringComparison.OrdinalIgnoreCase)))
         {
             NativeMethods.AttachToParentConsole();
+            ApplicationConfiguration.Initialize();
             PrintDisplays();
             return;
         }

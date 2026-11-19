@@ -110,8 +110,6 @@ internal sealed class MirrorSession : IDisposable
     private int _cursorY;
     private uint _cursorWidth;
     private uint _cursorHeight;
-    private int _cursorHotSpotX;
-    private int _cursorHotSpotY;
     private int _probePointerX;
     private int _probePointerY;
     private bool _probePointerInCaptureArea;
@@ -1004,8 +1002,6 @@ internal sealed class MirrorSession : IDisposable
         _cursorView = _device.CreateShaderResourceView(_cursorTexture);
         _cursorWidth = shapeInfo.Width;
         _cursorHeight = displayHeight;
-        _cursorHotSpotX = shapeInfo.HotSpot.X;
-        _cursorHotSpotY = shapeInfo.HotSpot.Y;
     }
 
     private void DrawCursor(OutputPresenter presenter)
