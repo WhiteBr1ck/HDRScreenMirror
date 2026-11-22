@@ -42,12 +42,13 @@ It now includes a complete suite of HDR analysis tools.
 6. Optional cursor rendering on output displays.
 7. An optional live status panel in the top left corner of a mirror output or the analyzed capture display.
 8. Global hotkeys.
-9. HDR luminance analysis tools.
-10. HDR gamut analysis tools.
+9. HDR luminance analysis tools (luminance false color and maximum/minimum crosshair markers).
+10. HDR gamut analysis tools (independent frosted-glass CIE 1976 gamut panel and gamut false color).
 11. Three frame rate policies: follow the output display, fixed limit, and unlimited.
 12. Automatic session recovery and layout adaptation after Windows resolution or display mode changes.
 13. OLED ABL luminance estimation from user supplied window luminance measurements, including estimated average, maximum, and minimum frame luminance after ABL.
-14. SDR PNG capture of the rendered HDR mirror output, including visible analysis panels, luminance markers, and the rendered output cursor.
+14. Live overlay customization (frosted glass, 1–20 Hz refresh rate, opacity, 50%–150% scale, surface and accent colors) and System/Light/Dark UI themes.
+15. Full-output and interactive region SDR PNG capture with clipboard support, preserving visible overlays, luminance markers, and the rendered output cursor.
 
 ## Requirements
 
@@ -102,21 +103,23 @@ For example, if three displays are connected to one GPU, HDRScreenMirror can cap
 
 | Option | Default | Purpose |
 | --- | --- | --- |
-| Mode | HDR multi-display mirroring | Manually switches between HDR multi display mirroring and HDR single display analysis; analysis does not require an output display |
+| Mode | Multi-display | Switches between HDR multi display mirroring and HDR single display analysis from the top bar |
+| Theme / Language | System / Auto | Live System, Light, and Dark UI theme switching plus Chinese/English localization |
 | SDR white level | 203 nits | Controls SDR fallback and cursor brightness in the HDR output without changing the FP16 HDR image |
-| Frame rate | Follow output display | Offers follow output display, fixed limit, and unlimited modes; the fixed limit supports 24 to 500 fps |
-| Status panel | Enabled | Shows resolution, format, frame rate, cursor state, and frame luminance data in the top left corner of a mirror output or the analyzed capture display |
+| Frame rate | Follow | Offers follow output display, fixed limit, and unlimited modes; the fixed limit supports 24 to 500 fps |
+| Status panel | Enabled | Shows signal format, frame rate, and frame luminance data in the top left corner of the output or analyzed display |
+| Overlay appearance | Frosted glass / 4Hz / 100% | Live customization of frosted glass, 1–20 Hz refresh rate, opacity, 50%–150% panel scale, surface color, and accent color |
 | Render cursor on output | Enabled | Composites the capture display cursor into the mirror image |
-| Show cursor area luminance | Enabled | Shows the average luminance of the area under the cursor to three decimal places; reports when the cursor is outside the capture area |
-| Output luminance false color | Disabled | Switches every output display to the same luminance false color view and shows its scale in the status panel |
-| Mark highest and lowest luminance | Disabled | Marks the highest and lowest average luminance locations on the output image and shows their values |
-| Show ABL estimated luminance | Disabled | Estimates average, maximum, and minimum frame luminance after OLED ABL using the selected profile, and shows equivalent APL, overall scale, and luminance reduction |
-| Real-time gamut analysis panel | Disabled | Shows the current frame CIE 1976 `u′v′` heatmap, three reference gamut triangles, and mutually exclusive gamut percentages in the bottom left corner |
+| Show cursor area luminance | Enabled | Shows the average luminance under the cursor to three decimal places |
+| False color | Off | Switches between Off, Luminance false color, and Gamut false color (monochrome sRGB with DCI-P3, BT.2020, and > BT.2020 highlights) in multi display mirroring |
+| Mark highest and lowest luminance | Disabled | Marks the highest and lowest average luminance locations with crosshairs and numeric readouts |
+| Show ABL estimated luminance | Disabled | Estimates average, maximum, and minimum frame luminance after OLED ABL using the selected profile, along with equivalent APL, scale, and drop |
+| Real-time gamut analysis panel | Disabled | Shows an independent CIE 1976 `u′v′` heatmap panel with reference gamut triangles and mutually exclusive gamut percentages |
 | Click through mirror | Disabled | Multi display mirroring only; lets mouse clicks reach the desktop behind the mirror window |
-| Enable global hotkeys | Enabled | Registers shortcuts for start or stop, false color, screenshots, the status panel, and control panel recall |
+| Enable global hotkeys | Enabled | Registers shortcuts for toggle, false color, full/region capture, status panel, and recall (viewable from “Shortcuts” in the top bar) |
 | Minimize to tray on close | Disabled | Hides the control panel while keeping an active mirror session running |
-| Move output windows to capture display on start | Disabled | Prevents windows from becoming inaccessible behind the mirror; minimized, system, and elevated windows may not move |
-| Screenshot save mode | Save automatically | Can save directly or ask for a location on every capture |
+| Move output windows to capture display | Disabled | Prevents windows from becoming inaccessible behind the mirror; minimized, system, and elevated windows may not move |
+| Screenshots | Auto save / Copy to clipboard | Supports Auto save, Ask path, and Clipboard modes, plus full and interactive region capture |
 | Screenshot folder | `Screenshots` beside the application | Used by automatic saving and can be changed with “Choose folder” |
 
 ### Frame rate policies
