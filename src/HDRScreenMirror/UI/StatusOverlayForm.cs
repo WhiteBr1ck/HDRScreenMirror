@@ -1,5 +1,7 @@
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Drawing.Text;
+using HDRScreenMirror.DirectX;
 using HDRScreenMirror.Interop;
 
 namespace HDRScreenMirror.UI;
@@ -9,18 +11,32 @@ internal sealed class StatusOverlayForm : Form
     private const int WsExTransparent = 0x00000020;
     private const int WsExToolWindow = 0x00000080;
     private const int WsExNoActivate = 0x08000000;
-    private const int HighDpiLayoutBaseline = 144;
-    private const int PanelWidth = 540;
-    private const int OuterPadding = 20;
-    private const int OuterRadius = 20;
-    private const int InnerRadius = 10;
+    private const int LayoutBaselineDpi = 144;
+    private const float DesignFontScale = LayoutBaselineDpi / 96f;
 
-    private static readonly Color SurfaceColor = Color.FromArgb(18, 20, 26);
-    private static readonly Color RaisedSurfaceColor = Color.FromArgb(27, 30, 38);
-    private static readonly Color PrimaryTextColor = Color.FromArgb(242, 245, 250);
-    private static readonly Color SecondaryTextColor = Color.FromArgb(171, 181, 197);
-    private static readonly Color MutedTextColor = Color.FromArgb(118, 129, 147);
-    private static readonly Color AccentColor = Color.FromArgb(92, 154, 255);
+    private const int PanelWidth = 528;
+    private const int OuterPadding = 24;
+    private const int ContentWidth = PanelWidth - OuterPadding * 2;
+    private const int OuterRadius = 12;
+    private const int LegendBarRadius = 3;
+    private const float HairlineWidth = 0.5f;
+
+    // Restrained semantic micro-accent colors matching the analysis overlay.
+    private static readonly Color PausedDotColor = Color.FromArgb(242, 180, 73);
+    private static readonly Color MaxAccentColor = Color.FromArgb(255, 102, 92);
+    private static readonly Color MinAccentColor = Color.FromArgb(92, 198, 245);
+    private static readonly Color PointerAccentColor = Color.FromArgb(63, 209, 132);
+    private static readonly Color HdrAccentColor = Color.FromArgb(255, 199, 56);
+
+    private OverlayAppearance _appearance = OverlayAppearance.Default;
+    private bool _glassActive;
+    private Color SurfaceColor => _appearance.BackgroundColor;
+    private Color BorderColor => _appearance.BorderColor;
+    private Color DividerColor => _appearance.DividerColor;
+    private Color PrimaryTextColor => _appearance.PrimaryTextColor;
+    private Color SecondaryTextColor => _appearance.SecondaryTextColor;
+    private Color MutedTextColor => _appearance.MutedTextColor;
+    private Color AccentTextColor => _appearance.EffectiveAccentColor;
 
     private readonly bool _mouseThrough;
     private readonly bool _excludeFromCapture;
@@ -29,16 +45,16 @@ internal sealed class StatusOverlayForm : Form
     private readonly string _captureName;
     private readonly string _presentName;
     private string _route;
-    private Font _titleFont = CreatePixelFont(11.33f, FontStyle.Bold);
-    private Font _stateFont = CreatePixelFont(11.33f, FontStyle.Bold);
-    private Font _bodyFont = CreatePixelFont(12f, FontStyle.Regular);
-    private Font _sectionFont = CreatePixelFont(11.33f, FontStyle.Bold);
-    private Font _captionFont = CreatePixelFont(10.67f, FontStyle.Regular);
-    private Font _valueFont = CreatePixelFont(16f, FontStyle.Bold);
-    private Font _footerFont = CreatePixelFont(10.67f, FontStyle.Regular);
+
+    // Strictly 3 font sizes (12px, 13.5px, 18px at 100% DPI -> 1.5x for 144 DPI design space).
+    private readonly Font _smallFont = CreatePixelFont(12f * DesignFontScale, FontStyle.Regular);
+    private readonly Font _smallSemiboldFont = CreatePixelFont(12f * DesignFontScale, FontStyle.Bold);
+    private readonly Font _bodyFont = CreatePixelFont(13.5f * DesignFontScale, FontStyle.Bold);
+    private readonly Font _valueFont = CreatePixelFont(18f * DesignFontScale, FontStyle.Bold);
+    private readonly float _unitBaselineOffset;
 
     private bool _showPointerLuminance;
-    private bool _falseColor;
+    private FalseColorMode _falseColorMode;
     private bool _showAblEstimate;
     private string _ablProfileName = string.Empty;
     private bool _hasTelemetry;
@@ -48,9 +64,9 @@ internal sealed class StatusOverlayForm : Form
     private uint _width;
     private uint _height;
     private double _framesPerSecond;
-    private bool _cursorVisible;
     private LuminanceTelemetry? _luminance;
     private float _dpiScale = 1f;
+    private int _currentDpi = LayoutBaselineDpi;
 
     public StatusOverlayForm(
         Rectangle outputBounds,
@@ -67,10 +83,11 @@ internal sealed class StatusOverlayForm : Form
         _analysisOnly = analysisOnly;
         _outputBounds = outputBounds;
         _showPointerLuminance = showPointerLuminance;
-        _falseColor = falseColor;
+        _falseColorMode = falseColor ? FalseColorMode.Luminance : FalseColorMode.None;
         _captureName = capture.DisplayName;
         _presentName = present.DisplayName;
         _route = CreateRouteText();
+        _unitBaselineOffset = CalculateBaselineOffset(_valueFont, _smallFont);
 
         Text = "HDRScreenMirror Status";
         FormBorderStyle = FormBorderStyle.None;
@@ -80,10 +97,9 @@ internal sealed class StatusOverlayForm : Form
         Bounds = new Rectangle(initialX, outputBounds.Top + 24, PanelWidth, CalculatePanelHeight());
         TopMost = true;
         ShowInTaskbar = false;
-        BackColor = SurfaceColor;
-        Opacity = 0.97;
+        BackColor = Color.Black;
+        Opacity = 1.0;
         DoubleBuffered = true;
-        UpdateRoundedRegion();
     }
 
     protected override bool ShowWithoutActivation => true;
@@ -109,7 +125,6 @@ internal sealed class StatusOverlayForm : Form
         _width = telemetry.Width;
         _height = telemetry.Height;
         _framesPerSecond = telemetry.FramesPerSecond;
-        _cursorVisible = telemetry.CursorVisible;
         Invalidate();
     }
 
@@ -128,12 +143,15 @@ internal sealed class StatusOverlayForm : Form
         ResizeForContent();
     }
 
-    public void SetFalseColor(bool enabled)
+    public void SetFalseColor(bool enabled) =>
+        SetFalseColorMode(enabled ? FalseColorMode.Luminance : FalseColorMode.None);
+
+    public void SetFalseColorMode(FalseColorMode mode)
     {
-        if (_falseColor == enabled)
+        if (_falseColorMode == mode)
             return;
 
-        _falseColor = enabled;
+        _falseColorMode = mode;
         ResizeForContent();
     }
 
@@ -154,10 +172,29 @@ internal sealed class StatusOverlayForm : Form
         Invalidate();
     }
 
+    public void ApplyAppearance(OverlayAppearance appearance)
+    {
+        bool scaleChanged = Math.Abs(_appearance.Scale - appearance.Scale) > 0.001;
+        _appearance = appearance;
+        if (IsHandleCreated)
+            ApplyWindowBackdrop();
+        if (scaleChanged)
+            ApplyDpi(_currentDpi);
+        else
+            Invalidate();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        ApplyWindowBackdrop();
+    }
+
     protected override void OnShown(EventArgs eventArgs)
     {
         base.OnShown(eventArgs);
         ApplyDpi(DeviceDpi);
+        ApplyWindowBackdrop();
         SetCaptureExclusion(true);
         BringToFront();
     }
@@ -173,27 +210,43 @@ internal sealed class StatusOverlayForm : Form
         if (!_excludeFromCapture || !IsHandleCreated)
             return !excluded;
 
-        bool applied = NativeMethods.SetWindowDisplayAffinity(
+        return NativeMethods.SetWindowDisplayAffinity(
             Handle,
             excluded ? NativeMethods.WdaExcludeFromCapture : NativeMethods.WdaNone);
-        return applied;
     }
 
     protected override void OnResize(EventArgs eventArgs)
     {
         base.OnResize(eventArgs);
-        UpdateRoundedRegion();
+        if (!_glassActive)
+            UpdateRoundedRegion();
     }
 
     protected override void OnPaintBackground(PaintEventArgs eventArgs)
     {
-        eventArgs.Graphics.Clear(SurfaceColor);
+        if (!_glassActive)
+            eventArgs.Graphics.Clear(SurfaceColor);
     }
 
     protected override void OnPaint(PaintEventArgs eventArgs)
     {
+        if (ClientSize.Width <= 0 || ClientSize.Height <= 0)
+            return;
+
+        if (_glassActive)
+        {
+            using Bitmap surface = new(ClientSize.Width, ClientSize.Height, PixelFormat.Format32bppPArgb);
+            using (Graphics g = Graphics.FromImage(surface))
+            {
+                g.Clear(Color.Transparent);
+                DrawPanel(g, drawOpaqueBackground: false, drawLiquidGlassSheen: true);
+            }
+            NativeMethods.BlitPremultipliedBitmap(eventArgs.Graphics, surface);
+            return;
+        }
+
         base.OnPaint(eventArgs);
-        DrawPanel(eventArgs.Graphics);
+        DrawPanel(eventArgs.Graphics, drawOpaqueBackground: true, drawLiquidGlassSheen: false);
     }
 
     internal Bitmap RenderScreenshotBitmap()
@@ -201,273 +254,366 @@ internal sealed class StatusOverlayForm : Form
         Bitmap bitmap = new(
             Math.Max(ClientSize.Width, 1),
             Math.Max(ClientSize.Height, 1),
-            System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            PixelFormat.Format32bppArgb);
         using Graphics graphics = Graphics.FromImage(bitmap);
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.Clear(Color.Transparent);
         using GraphicsPath backgroundPath = CreateRoundedRectangle(
-            new Rectangle(Point.Empty, bitmap.Size),
+            new RectangleF(0, 0, bitmap.Width, bitmap.Height),
             ScaleToDevice(OuterRadius));
-        using SolidBrush background = new(SurfaceColor);
+        int bgAlpha = _appearance.GlassEnabled
+            ? (int)Math.Clamp(Math.Round(_appearance.Opacity * 224.0), 110, 245)
+            : 255;
+        using SolidBrush background = new(Color.FromArgb(bgAlpha, SurfaceColor));
         graphics.FillPath(background, backgroundPath);
         GraphicsState clipState = graphics.Save();
         graphics.SetClip(backgroundPath);
-        DrawPanel(graphics);
+        DrawPanel(graphics, drawOpaqueBackground: false, drawLiquidGlassSheen: _appearance.GlassEnabled);
         graphics.Restore(clipState);
         return bitmap;
     }
 
-    private void DrawPanel(Graphics graphics)
+    private void ApplyWindowBackdrop()
+    {
+        if (!IsHandleCreated)
+            return;
+
+        if (_appearance.GlassEnabled)
+        {
+            if (Region is not null)
+            {
+                Region.Dispose();
+                Region = null;
+            }
+            BackColor = Color.Black;
+            Opacity = 1.0;
+            _glassActive = NativeMethods.TryApplyAcrylicGlass(
+                Handle,
+                enabled: true,
+                _appearance.BackgroundColor,
+                _appearance.Opacity);
+            if (!_glassActive)
+            {
+                BackColor = SurfaceColor;
+                Opacity = _appearance.Opacity;
+                UpdateRoundedRegion();
+            }
+        }
+        else
+        {
+            NativeMethods.TryApplyAcrylicGlass(Handle, enabled: false, _appearance.BackgroundColor, _appearance.Opacity);
+            _glassActive = false;
+            BackColor = SurfaceColor;
+            Opacity = _appearance.Opacity;
+            UpdateRoundedRegion();
+        }
+        Invalidate();
+    }
+
+    private void DrawPanel(Graphics graphics, bool drawOpaqueBackground, bool drawLiquidGlassSheen)
     {
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-        graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        graphics.TextRenderingHint = drawLiquidGlassSheen
+            ? TextRenderingHint.AntiAliasGridFit
+            : TextRenderingHint.ClearTypeGridFit;
         GraphicsState scaleState = graphics.Save();
         graphics.ScaleTransform(_dpiScale, _dpiScale);
 
-        DrawHeader(graphics);
-        DrawSignalSummary(graphics);
-        DrawLuminanceSection(graphics);
-        DrawFooter(graphics);
+        int panelHeight = CalculatePanelHeight();
+        if (drawOpaqueBackground)
+        {
+            using SolidBrush bg = new(SurfaceColor);
+            graphics.FillRectangle(bg, 0, 0, PanelWidth, panelHeight);
+        }
 
-        Rectangle designBounds = new(0, 0, PanelWidth, CalculatePanelHeight());
-        using GraphicsPath outlinePath = CreateRoundedRectangle(designBounds, OuterRadius);
-        using Pen outline = new(Color.FromArgb(22, 255, 255, 255), 1);
-        graphics.DrawPath(outline, outlinePath);
+        if (drawLiquidGlassSheen)
+            DrawLiquidGlassHighlights(graphics, panelHeight);
+
+        int y = DrawHeader(graphics);
+        y = DrawFrameLuminanceSection(graphics, y);
+        if (_showAblEstimate)
+            y = DrawAblSection(graphics, y);
+        if (_showPointerLuminance)
+            y = DrawPointerSection(graphics, y);
+        if (_falseColorMode == FalseColorMode.Luminance)
+            DrawLuminanceFalseColorLegend(graphics, y);
+        else if (_falseColorMode == FalseColorMode.Gamut)
+            DrawGamutFalseColorLegend(graphics, y);
+
+        if (!_glassActive)
+        {
+            RectangleF designBounds = new(0.25f, 0.25f, PanelWidth - 0.5f, panelHeight - 0.5f);
+            using GraphicsPath outlinePath = CreateRoundedRectangle(designBounds, OuterRadius);
+            using Pen outline = new(BorderColor, HairlineWidth);
+            graphics.DrawPath(outline, outlinePath);
+        }
+
         graphics.Restore(scaleState);
     }
 
-    private void DrawHeader(Graphics graphics)
+    private void DrawLiquidGlassHighlights(Graphics graphics, int panelHeight)
     {
-        using SolidBrush titleBrush = new(SecondaryTextColor);
-        graphics.DrawString("HDR SCREEN MIRROR", _titleFont, titleBrush, OuterPadding, 17);
+        Color sheenTop = _appearance.IsLightSurface
+            ? Color.FromArgb(64, 255, 255, 255)
+            : Color.FromArgb(30, 255, 255, 255);
+        RectangleF sheenRect = new(0, 0, PanelWidth, Math.Min(46, panelHeight));
+        using LinearGradientBrush sheenBrush = new(sheenRect, sheenTop, Color.FromArgb(0, 255, 255, 255), LinearGradientMode.Vertical);
+        graphics.FillRectangle(sheenBrush, sheenRect);
 
-        string state = _hasTelemetry ? _state : Localization.T("OverlayStarting");
-        bool paused = state.Contains("暂停", StringComparison.OrdinalIgnoreCase) ||
-                      state.Contains("paused", StringComparison.OrdinalIgnoreCase) ||
-                      state.Contains("waiting", StringComparison.OrdinalIgnoreCase);
-        Color stateColor = paused ? Color.FromArgb(246, 186, 73) : Color.FromArgb(77, 214, 145);
-        SizeF stateSize = graphics.MeasureString(state, _stateFont);
-        int pillWidth = Math.Min(250, Math.Max(82, (int)Math.Ceiling(stateSize.Width) + 34));
-        Rectangle pillBounds = new(PanelWidth - OuterPadding - pillWidth, 12, pillWidth, 28);
-        DrawRoundedFill(graphics, pillBounds, 14, Color.FromArgb(34, stateColor));
-        using SolidBrush dotBrush = new(stateColor);
-        graphics.FillEllipse(dotBrush, pillBounds.Left + 11, pillBounds.Top + 10, 8, 8);
-        using SolidBrush stateBrush = new(PrimaryTextColor);
-        graphics.DrawString(state, _stateFont, stateBrush, pillBounds.Left + 25, pillBounds.Top + 6);
+        // Match Windows 11 DWM rounded corner radius cleanly without sharp corner clipping seams.
+        float dwmCornerRadius = Math.Max(4f, 8f / Math.Max(0.35f, _dpiScale));
+        RectangleF rimBounds = new(0.4f, 0.4f, PanelWidth - 0.8f, panelHeight - 0.8f);
+        using GraphicsPath rimPath = CreateRoundedRectangle(rimBounds, dwmCornerRadius);
+        using Pen glassBorder = new(BorderColor, HairlineWidth);
+        graphics.DrawPath(glassBorder, rimPath);
     }
 
-    private void DrawSignalSummary(Graphics graphics)
+    private int DrawHeader(Graphics graphics)
     {
+        bool paused = _hasTelemetry &&
+            (_state.Contains("暂停", StringComparison.OrdinalIgnoreCase) ||
+             _state.Contains("paused", StringComparison.OrdinalIgnoreCase) ||
+             _state.Contains("waiting", StringComparison.OrdinalIgnoreCase));
+
+        using StringFormat typographic = CreateTypographicFormat();
         using SolidBrush primaryBrush = new(PrimaryTextColor);
         using SolidBrush secondaryBrush = new(SecondaryTextColor);
         using SolidBrush mutedBrush = new(MutedTextColor);
 
-        graphics.DrawString(_route, _bodyFont, primaryBrush, OuterPadding, 50);
-        string signal = _hasTelemetry
-            ? $"{_inputKind}  ·  {FriendlyFormat(_inputFormat)}  ·  {_width}×{_height}"
-            : Localization.T("OverlayWaiting");
-        graphics.DrawString(signal, _bodyFont, secondaryBrush, OuterPadding, 73);
+        string rightText = paused
+            ? _state
+            : _hasTelemetry
+                ? $"{_framesPerSecond:F1} fps"
+                : string.Empty;
+        float rightWidth = string.IsNullOrEmpty(rightText)
+            ? 0f
+            : graphics.MeasureString(rightText, _smallSemiboldFont, 200, typographic).Width;
+        float reservedRight = rightWidth + (paused ? 16f : 0f);
+        float routeMaxWidth = Math.Max(140f, ContentWidth - reservedRight - 16f);
 
-        string performance = $"{_framesPerSecond:F1} fps   ·   {Localization.T(_cursorVisible ? "CursorOn" : "CursorOff")}";
-        SizeF performanceSize = graphics.MeasureString(performance, _captionFont);
-        graphics.DrawString(
-            performance,
-            _captionFont,
-            mutedBrush,
-            PanelWidth - OuterPadding - performanceSize.Width,
-            75);
+        using StringFormat routeFormat = CreateTypographicFormat(ellipsis: true);
+        RectangleF routeBounds = new(OuterPadding, 20f, routeMaxWidth, 26f);
+        graphics.DrawString(_route, _bodyFont, primaryBrush, routeBounds, routeFormat);
 
-        using Pen divider = new(Color.FromArgb(16, 255, 255, 255), 1);
-        graphics.DrawLine(divider, OuterPadding, 103, PanelWidth - OuterPadding, 103);
-    }
-
-    private void DrawLuminanceSection(Graphics graphics)
-    {
-        using SolidBrush sectionBrush = new(SecondaryTextColor);
-        graphics.DrawString(Localization.T("OverlayFrameTitle"), _sectionFont, sectionBrush, OuterPadding, 115);
-
-        double average = _luminance?.AverageNits ?? 0;
-        double maximum = _luminance?.MaximumNits ?? 0;
-        double minimum = _luminance?.MinimumNits ?? 0;
-        const int cardY = 138;
-        const int cardHeight = 54;
-        const int gap = 8;
-        int cardWidth = (PanelWidth - OuterPadding * 2 - gap * 2) / 3;
-        DrawMetricCard(graphics, new Rectangle(OuterPadding, cardY, cardWidth, cardHeight), "OverlayAverage", average);
-        DrawMetricCard(
-            graphics,
-            new Rectangle(OuterPadding + cardWidth + gap, cardY, cardWidth, cardHeight),
-            "OverlayMaximum",
-            maximum);
-        DrawMetricCard(
-            graphics,
-            new Rectangle(OuterPadding + (cardWidth + gap) * 2, cardY, cardWidth, cardHeight),
-            "OverlayMinimum",
-            minimum);
-
-        int nextY = 202;
-        if (_showAblEstimate)
-            nextY = DrawAblSection(graphics, nextY);
-
-        if (_showPointerLuminance)
+        if (!string.IsNullOrEmpty(rightText))
         {
-            int pointerCardHeight = _showAblEstimate ? 62 : 40;
-            DrawPointerCard(
-                graphics,
-                new Rectangle(OuterPadding, nextY, PanelWidth - OuterPadding * 2, pointerCardHeight));
-            nextY += pointerCardHeight + 10;
+            float rightX = PanelWidth - OuterPadding - rightWidth;
+            float rightY = 20f + (_bodyFont.Height - _smallSemiboldFont.Height) * 0.5f + 0.5f;
+            if (paused)
+            {
+                DrawMicroSquare(graphics, rightX - 12f, rightY + (_smallSemiboldFont.Height - 6f) * 0.5f, 6f, PausedDotColor);
+            }
+            graphics.DrawString(rightText, _smallSemiboldFont, secondaryBrush, rightX, rightY, typographic);
         }
 
-        if (_falseColor)
-            DrawFalseColorLegend(graphics, nextY);
+        if (_hasTelemetry)
+        {
+            bool isHdr = _inputKind.Contains("HDR", StringComparison.OrdinalIgnoreCase);
+            float sigX = OuterPadding;
+            float sigY = 52f;
+            DrawMicroSquare(graphics, sigX, sigY + (_smallFont.Height - 6f) * 0.5f, 6f, isHdr ? HdrAccentColor : MutedTextColor);
+            sigX += 12f;
+            graphics.DrawString(_inputKind, _smallSemiboldFont, isHdr ? primaryBrush : secondaryBrush, sigX, sigY, typographic);
+            float kindW = graphics.MeasureString(_inputKind, _smallSemiboldFont, 120, typographic).Width;
+            string rest = $"{FriendlyFormat(_inputFormat)}   {_width}×{_height}";
+            graphics.DrawString(rest, _smallFont, mutedBrush, sigX + kindW + 12f, sigY, typographic);
+        }
+        else
+        {
+            graphics.DrawString(Localization.T("OverlayWaiting"), _smallFont, mutedBrush, OuterPadding, 52f, typographic);
+        }
+
+        return 86;
+    }
+
+    private int DrawFrameLuminanceSection(Graphics graphics, int y)
+    {
+        DrawDivider(graphics, y);
+        y += 16;
+
+        DrawSectionHeader(graphics, OuterPadding, y, Localization.T("OverlayFrameTitle"), PrimaryTextColor);
+
+        DrawThreeColumnLuminance(
+            graphics,
+            y + 28,
+            _luminance?.AverageNits ?? 0,
+            _luminance?.MaximumNits ?? 0,
+            _luminance?.MinimumNits ?? 0,
+            showSemanticColumnAccents: true);
+
+        return y + 88;
     }
 
     private int DrawAblSection(Graphics graphics, int y)
     {
-        using SolidBrush sectionBrush = new(SecondaryTextColor);
-        using SolidBrush profileBrush = new(MutedTextColor);
-        graphics.DrawString(Localization.T("OverlayAblTitle"), _sectionFont, sectionBrush, OuterPadding, y);
-        using StringFormat profileFormat = new()
-        {
-            Alignment = StringAlignment.Far,
-            LineAlignment = StringAlignment.Near,
-            Trimming = StringTrimming.EllipsisCharacter,
-            FormatFlags = StringFormatFlags.NoWrap
-        };
-        Rectangle profileBounds = new(PanelWidth / 2, y, PanelWidth / 2 - OuterPadding, 20);
-        graphics.DrawString(_ablProfileName, _captionFont, profileBrush, profileBounds, profileFormat);
+        DrawDivider(graphics, y);
+        y += 16;
+
+        using StringFormat typographic = CreateTypographicFormat();
+        using StringFormat rightEllipsis = CreateTypographicFormat(StringAlignment.Far, ellipsis: true);
+        using SolidBrush mutedBrush = new(MutedTextColor);
+        using SolidBrush secondaryBrush = new(SecondaryTextColor);
+        using SolidBrush accentBrush = new(AccentTextColor);
+
+        DrawSectionHeader(graphics, OuterPadding, y, Localization.T("OverlayAblTitle"), AccentTextColor);
+        RectangleF profileBounds = new(OuterPadding + ContentWidth * 0.35f, y, ContentWidth * 0.65f, 20f);
+        graphics.DrawString(_ablProfileName, _smallFont, mutedBrush, profileBounds, rightEllipsis);
 
         AblLuminanceEstimate? estimate = _luminance?.AblEstimate;
-        double average = estimate?.AverageNits ?? 0;
-        double maximum = estimate?.MaximumNits ?? 0;
-        double minimum = estimate?.MinimumNits ?? 0;
-        const int gap = 8;
-        int cardWidth = (PanelWidth - OuterPadding * 2 - gap * 2) / 3;
-        int cardY = y + 23;
-        DrawMetricCard(
+        DrawThreeColumnLuminance(
             graphics,
-            new Rectangle(OuterPadding, cardY, cardWidth, 54),
-            "OverlayAverage",
-            average,
-            Color.FromArgb(24, 34, 50));
-        DrawMetricCard(
-            graphics,
-            new Rectangle(OuterPadding + cardWidth + gap, cardY, cardWidth, 54),
-            "OverlayMaximum",
-            maximum,
-            Color.FromArgb(24, 34, 50));
-        DrawMetricCard(
-            graphics,
-            new Rectangle(OuterPadding + (cardWidth + gap) * 2, cardY, cardWidth, 54),
-            "OverlayMinimum",
-            minimum,
-            Color.FromArgb(24, 34, 50));
+            y + 28,
+            estimate?.AverageNits ?? 0,
+            estimate?.MaximumNits ?? 0,
+            estimate?.MinimumNits ?? 0,
+            showSemanticColumnAccents: false);
 
-        Rectangle summaryBounds = new(OuterPadding, cardY + 64, PanelWidth - OuterPadding * 2, 36);
-        DrawRoundedFill(graphics, summaryBounds, InnerRadius, Color.FromArgb(22, 36, 48, 70));
+        float subY = y + 88;
+        float colWidth = ContentWidth / 3f;
+        double aplPercent = estimate?.EquivalentAplPercent ?? 0;
         double scalePercent = (estimate?.ScaleFactor ?? 0) * 100.0;
-        string summary = Localization.F(
-            "OverlayAblSummary",
-            estimate?.EquivalentAplPercent ?? 0,
-            scalePercent,
-            100.0 - scalePercent);
-        using SolidBrush summaryBrush = new(AccentColor);
-        using StringFormat centered = new()
-        {
-            Alignment = StringAlignment.Center,
-            LineAlignment = StringAlignment.Center,
-            FormatFlags = StringFormatFlags.NoWrap
-        };
-        graphics.DrawString(summary, _captionFont, summaryBrush, summaryBounds, centered);
-        return y + 133;
+        double reductionPercent = Math.Max(0, 100.0 - scalePercent);
+
+        DrawInlineStat(graphics, OuterPadding, subY, Localization.T("OverlayAblAplLabel"), $"{aplPercent:F1}%", accentBrush, mutedBrush, typographic);
+        DrawInlineStat(graphics, OuterPadding + colWidth, subY, Localization.T("OverlayAblScaleLabel"), $"{scalePercent:F1}%", secondaryBrush, mutedBrush, typographic);
+        DrawInlineStat(graphics, OuterPadding + colWidth * 2f, subY, Localization.T("OverlayAblReductionLabel"), $"{reductionPercent:F1}%", secondaryBrush, mutedBrush, typographic);
+
+        return y + 120;
     }
 
-    private void DrawMetricCard(
+    private void DrawSectionHeader(Graphics graphics, float x, float y, string title, Color accentSquareColor)
+    {
+        using StringFormat typographic = CreateTypographicFormat();
+        using SolidBrush brush = new(SecondaryTextColor);
+        const float sq = 5f;
+        DrawMicroSquare(graphics, x, y + (_smallSemiboldFont.Height - sq) * 0.5f, sq, accentSquareColor);
+        graphics.DrawString(title, _smallSemiboldFont, brush, x + sq + 7f, y, typographic);
+    }
+
+    private void DrawThreeColumnLuminance(
         Graphics graphics,
-        Rectangle bounds,
-        string captionKey,
-        double value,
-        Color? background = null)
+        float y,
+        double average,
+        double maximum,
+        double minimum,
+        bool showSemanticColumnAccents)
     {
-        DrawRoundedFill(graphics, bounds, InnerRadius, background ?? RaisedSurfaceColor);
-        using Pen outline = new(Color.FromArgb(12, 255, 255, 255), 1);
-        using GraphicsPath path = CreateRoundedRectangle(bounds, InnerRadius);
-        graphics.DrawPath(outline, path);
-
-        using SolidBrush captionBrush = new(MutedTextColor);
-        using SolidBrush valueBrush = new(PrimaryTextColor);
-        using StringFormat centered = new() { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Near };
-        graphics.DrawString(Localization.T(captionKey), _captionFont, captionBrush, bounds, centered);
-
-        Rectangle valueBounds = new(bounds.Left, bounds.Top + 18, bounds.Width, 29);
-        string formattedValue = value is > 0 and < 1 ? $"{value:F3}" : $"{value:F1}";
-        graphics.DrawString($"{formattedValue} nits", _valueFont, valueBrush, valueBounds, centered);
+        float colWidth = ContentWidth / 3f;
+        DrawLuminanceColumn(graphics, OuterPadding, y, "OverlayAverage", average, showSemanticColumnAccents ? Color.FromArgb(180, SecondaryTextColor) : null);
+        DrawLuminanceColumn(graphics, OuterPadding + colWidth, y, "OverlayMaximum", maximum, showSemanticColumnAccents ? MaxAccentColor : null);
+        DrawLuminanceColumn(graphics, OuterPadding + colWidth * 2f, y, "OverlayMinimum", minimum, showSemanticColumnAccents ? MinAccentColor : null);
     }
 
-    private void DrawPointerCard(Graphics graphics, Rectangle bounds)
+    private void DrawLuminanceColumn(Graphics graphics, float x, float y, string labelKey, double value, Color? accentSquare)
     {
-        DrawRoundedFill(graphics, bounds, InnerRadius, Color.FromArgb(22, 36, 48, 70));
-        using SolidBrush titleBrush = new(SecondaryTextColor);
-        using SolidBrush valueBrush = new(PrimaryTextColor);
-        float titleY = bounds.Top + (bounds.Height - _bodyFont.Height) * 0.5f;
-        graphics.DrawString(Localization.T("OverlayPointerTitle"), _bodyFont, titleBrush, bounds.Left + 12, titleY);
+        using StringFormat typographic = CreateTypographicFormat();
+        using SolidBrush mutedBrush = new(MutedTextColor);
+        using SolidBrush primaryBrush = new(PrimaryTextColor);
 
-        using StringFormat rightAligned = new()
+        float labelX = x;
+        if (accentSquare is Color color)
         {
-            Alignment = StringAlignment.Far,
-            LineAlignment = StringAlignment.Center
-        };
-        Rectangle valueBounds = new(bounds.Left + bounds.Width / 2, bounds.Top, bounds.Width / 2 - 12, bounds.Height);
+            const float sq = 5f;
+            DrawMicroSquare(graphics, x, y + (_smallFont.Height - sq) * 0.5f, sq, color);
+            labelX += sq + 6f;
+        }
+        graphics.DrawString(Localization.T(labelKey), _smallFont, mutedBrush, labelX, y, typographic);
+
+        string formattedValue = value is > 0 and < 1 ? $"{value:F3}" : $"{value:F1}";
+        float valueY = y + 22f;
+        graphics.DrawString(formattedValue, _valueFont, primaryBrush, x, valueY, typographic);
+        float valueWidth = graphics.MeasureString(formattedValue, _valueFont, 150, typographic).Width;
+        graphics.DrawString("nits", _smallFont, mutedBrush, x + valueWidth + 4f, valueY + _unitBaselineOffset, typographic);
+    }
+
+    private void DrawInlineStat(
+        Graphics graphics,
+        float x,
+        float y,
+        string label,
+        string value,
+        Brush valueBrush,
+        Brush labelBrush,
+        StringFormat typographic)
+    {
+        graphics.DrawString(label, _smallFont, labelBrush, x, y, typographic);
+        float labelWidth = graphics.MeasureString(label, _smallFont, 120, typographic).Width;
+        graphics.DrawString(value, _smallSemiboldFont, valueBrush, x + labelWidth + 6f, y, typographic);
+    }
+
+    private int DrawPointerSection(Graphics graphics, int y)
+    {
+        DrawDivider(graphics, y);
+        y += 16;
+
+        using StringFormat typographic = CreateTypographicFormat();
+        using SolidBrush mutedBrush = new(MutedTextColor);
+        using SolidBrush primaryBrush = new(PrimaryTextColor);
+        using SolidBrush accentBrush = new(AccentTextColor);
+
+        if (!_showAblEstimate)
+        {
+            float labelY = y + (_bodyFont.Height - _smallSemiboldFont.Height) * 0.5f;
+            DrawSectionHeader(graphics, OuterPadding, labelY, Localization.T("OverlayPointerTitle"), PointerAccentColor);
+
+            if (_luminance is null || !_luminance.PointerInCaptureArea)
+            {
+                string outside = Localization.T("OverlayPointerOutsideShort");
+                SizeF outsideSize = graphics.MeasureString(outside, _smallFont, 200, typographic);
+                graphics.DrawString(outside, _smallFont, mutedBrush, PanelWidth - OuterPadding - outsideSize.Width, labelY, typographic);
+            }
+            else
+            {
+                string value = $"{_luminance.PointerRegionNits:F3}";
+                SizeF valueSize = graphics.MeasureString(value, _bodyFont, 160, typographic);
+                SizeF unitSize = graphics.MeasureString("nits", _smallFont, 60, typographic);
+                float unitX = PanelWidth - OuterPadding - unitSize.Width;
+                float valueX = unitX - 4f - valueSize.Width;
+                float unitOffset = CalculateBaselineOffset(_bodyFont, _smallFont);
+                graphics.DrawString(value, _bodyFont, primaryBrush, valueX, y, typographic);
+                graphics.DrawString("nits", _smallFont, mutedBrush, unitX, y + unitOffset, typographic);
+            }
+
+            return y + 38;
+        }
+
+        float colWidth = ContentWidth / 3f;
+        DrawSectionHeader(graphics, OuterPadding, y, Localization.T("OverlayPointerTitle"), PointerAccentColor);
+
         if (_luminance is null || !_luminance.PointerInCaptureArea)
         {
             graphics.DrawString(
                 Localization.T("OverlayPointerOutsideShort"),
-                _bodyFont,
-                valueBrush,
-                valueBounds,
-                rightAligned);
-            return;
+                _smallFont,
+                mutedBrush,
+                OuterPadding + colWidth,
+                y,
+                typographic);
+            return y + 54;
         }
 
-        if (_luminance.PointerScaledNits is not double scaledNits)
+        float col2X = OuterPadding + colWidth;
+        float col3X = OuterPadding + colWidth * 2f;
+        graphics.DrawString(Localization.T("OverlayPointerSourceLabel"), _smallFont, mutedBrush, col2X, y, typographic);
+        graphics.DrawString($"{_luminance.PointerRegionNits:F3} nits", _smallSemiboldFont, primaryBrush, col2X, y + 22f, typographic);
+
+        if (_luminance.PointerScaledNits is double scaledNits)
         {
-            graphics.DrawString(
-                $"{_luminance.PointerRegionNits:F3} nits",
-                _bodyFont,
-                valueBrush,
-                valueBounds,
-                rightAligned);
-            return;
+            graphics.DrawString(Localization.T("OverlayPointerAblLabel"), _smallFont, mutedBrush, col3X, y, typographic);
+            graphics.DrawString($"{scaledNits:F3} nits", _smallSemiboldFont, accentBrush, col3X, y + 22f, typographic);
         }
 
-        using SolidBrush scaledBrush = new(AccentColor);
-        using StringFormat lineFormat = new()
-        {
-            Alignment = StringAlignment.Far,
-            LineAlignment = StringAlignment.Near,
-            FormatFlags = StringFormatFlags.NoWrap
-        };
-        Rectangle originalBounds = new(valueBounds.Left, bounds.Top + 5, valueBounds.Width, 24);
-        Rectangle scaledBounds = new(valueBounds.Left, bounds.Top + 33, valueBounds.Width, 24);
-        graphics.DrawString(
-            Localization.F("OverlayPointerOriginal", _luminance.PointerRegionNits),
-            _bodyFont,
-            valueBrush,
-            originalBounds,
-            lineFormat);
-        graphics.DrawString(
-            Localization.F("OverlayPointerScaled", scaledNits),
-            _bodyFont,
-            scaledBrush,
-            scaledBounds,
-            lineFormat);
+        return y + 54;
     }
 
-    private void DrawFalseColorLegend(Graphics graphics, int y)
+    private void DrawLuminanceFalseColorLegend(Graphics graphics, int y)
     {
-        using SolidBrush sectionBrush = new(SecondaryTextColor);
-        graphics.DrawString(Localization.T("OverlayFalseColor"), _sectionFont, sectionBrush, OuterPadding, y);
+        DrawDivider(graphics, y);
+        y += 16;
+
+        using SolidBrush mutedBrush = new(MutedTextColor);
+        DrawSectionHeader(graphics, OuterPadding, y, Localization.T("OverlayFalseColor"), HdrAccentColor);
 
         Color[] startColors =
         [
@@ -490,86 +636,147 @@ internal sealed class StatusOverlayForm : Form
             Color.White
         ];
         string[] labels = ["0–100", "100–203", "203–400", "400–1k", "1–2k", "2–4k", "4k+"];
-        int legendY = y + 23;
-        int legendWidth = PanelWidth - OuterPadding * 2;
-        int segmentWidth = legendWidth / startColors.Length;
-        Rectangle legendBounds = new(OuterPadding, legendY, legendWidth, 13);
-        using GraphicsPath clipPath = CreateRoundedRectangle(legendBounds, 6);
+
+        float barY = y + 28f;
+        const float barHeight = 8f;
+        float segmentWidth = ContentWidth / (float)startColors.Length;
+        RectangleF barBounds = new(OuterPadding, barY, ContentWidth, barHeight);
+        using GraphicsPath clipPath = CreateRoundedRectangle(barBounds, LegendBarRadius);
         GraphicsState state = graphics.Save();
         graphics.SetClip(clipPath);
         for (int i = 0; i < startColors.Length; i++)
         {
-            int width = i == startColors.Length - 1 ? legendWidth - segmentWidth * i : segmentWidth + 1;
-            Rectangle segmentBounds = new(OuterPadding + i * segmentWidth, legendY, width, 13);
+            float segX = OuterPadding + i * segmentWidth;
+            float segW = i == startColors.Length - 1 ? ContentWidth - i * segmentWidth : segmentWidth + 0.75f;
+            RectangleF segBounds = new(segX, barY, segW, barHeight);
             if (startColors[i] == endColors[i])
             {
                 using SolidBrush brush = new(startColors[i]);
-                graphics.FillRectangle(brush, segmentBounds);
+                graphics.FillRectangle(brush, segBounds);
             }
             else
             {
-                using LinearGradientBrush brush = new(
-                    segmentBounds,
-                    startColors[i],
-                    endColors[i],
-                    LinearGradientMode.Horizontal)
+                using LinearGradientBrush brush = new(segBounds, startColors[i], endColors[i], LinearGradientMode.Horizontal)
                 {
                     GammaCorrection = true
                 };
-                graphics.FillRectangle(brush, segmentBounds);
+                graphics.FillRectangle(brush, segBounds);
             }
         }
         graphics.Restore(state);
 
-        using SolidBrush labelBrush = new(MutedTextColor);
-        using StringFormat centered = new() { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Near };
+        using Pen barBorder = new(BorderColor, HairlineWidth);
+        graphics.DrawPath(barBorder, clipPath);
+
+        using StringFormat centered = CreateTypographicFormat(StringAlignment.Center);
         for (int i = 0; i < labels.Length; i++)
         {
-            Rectangle labelBounds = new(
+            RectangleF labelBounds = new(
                 OuterPadding + i * segmentWidth,
-                legendY + 16,
-                i == labels.Length - 1 ? legendWidth - i * segmentWidth : segmentWidth,
-                18);
-            graphics.DrawString(labels[i], _footerFont, labelBrush, labelBounds, centered);
+                barY + barHeight + 8f,
+                segmentWidth,
+                20f);
+            graphics.DrawString(labels[i], _smallFont, mutedBrush, labelBounds, centered);
         }
     }
 
-    private void DrawFooter(Graphics graphics)
+    private void DrawGamutFalseColorLegend(Graphics graphics, int y)
     {
-        int footerY = CalculatePanelHeight() - 29;
-        using SolidBrush footerBrush = new(MutedTextColor);
-        graphics.DrawString(
-            Localization.T(_analysisOnly ? "OverlayHotkeysAnalysis" : "OverlayHotkeys"),
-            _footerFont,
-            footerBrush,
-            OuterPadding,
-            footerY);
+        DrawDivider(graphics, y);
+        y += 16;
+
+        using SolidBrush mutedBrush = new(MutedTextColor);
+        DrawSectionHeader(graphics, OuterPadding, y, Localization.T("OverlayGamutFalseColor"), Color.FromArgb(224, 92, 255));
+
+        string[] labels =
+        [
+            Localization.T("OverlayGamutSrgb"),
+            "DCI-P3",
+            "BT.2020",
+            Localization.T("OverlayGamutOutside")
+        ];
+        Color[] solidColors =
+        [
+            Color.Empty,
+            Color.FromArgb(255, 199, 56),
+            Color.FromArgb(224, 92, 255),
+            Color.FromArgb(255, 66, 61)
+        ];
+
+        float barY = y + 28f;
+        const float barHeight = 8f;
+        const float segmentGap = 5f;
+        float segmentWidth = (ContentWidth - segmentGap * (labels.Length - 1)) / labels.Length;
+
+        using Pen barBorder = new(BorderColor, HairlineWidth);
+        using StringFormat centered = CreateTypographicFormat(StringAlignment.Center);
+        for (int i = 0; i < labels.Length; i++)
+        {
+            float segX = OuterPadding + i * (segmentWidth + segmentGap);
+            RectangleF segBounds = new(segX, barY, segmentWidth, barHeight);
+            using GraphicsPath segPath = CreateRoundedRectangle(segBounds, LegendBarRadius);
+            if (i == 0)
+            {
+                using LinearGradientBrush monoBrush = new(
+                    segBounds,
+                    Color.FromArgb(30, 33, 40),
+                    Color.FromArgb(224, 228, 236),
+                    LinearGradientMode.Horizontal);
+                graphics.FillPath(monoBrush, segPath);
+                graphics.DrawPath(barBorder, segPath);
+            }
+            else
+            {
+                using SolidBrush brush = new(solidColors[i]);
+                graphics.FillPath(brush, segPath);
+            }
+
+            RectangleF labelBounds = new(segX, barY + barHeight + 8f, segmentWidth, 20f);
+            graphics.DrawString(labels[i], _smallFont, mutedBrush, labelBounds, centered);
+        }
+    }
+
+    private static void DrawMicroSquare(Graphics graphics, float x, float y, float size, Color color)
+    {
+        using GraphicsPath path = CreateRoundedRectangle(new RectangleF(x, y, size, size), 1.5f);
+        using SolidBrush brush = new(color);
+        graphics.FillPath(brush, path);
+    }
+
+    private void DrawDivider(Graphics graphics, float y)
+    {
+        using Pen divider = new(DividerColor, HairlineWidth);
+        graphics.DrawLine(divider, OuterPadding, y, PanelWidth - OuterPadding, y);
     }
 
     private int CalculatePanelHeight()
     {
-        int height = 245;
+        int height = 86 + 16 + 88;
         if (_showAblEstimate)
-            height += 133;
+            height += 16 + 120;
         if (_showPointerLuminance)
-            height += _showAblEstimate ? 72 : 50;
-        if (_falseColor)
-            height += 68;
-        return height;
+            height += 16 + (_showAblEstimate ? 54 : 38);
+        if (_falseColorMode != FalseColorMode.None)
+            height += 16 + 70;
+        return height + 18;
     }
 
     private void ResizeForContent()
     {
-        Height = ScaleToDevice(CalculatePanelHeight());
-        UpdateRoundedRegion();
+        int targetHeight = ScaleToDevice(CalculatePanelHeight());
+        if (Height != targetHeight)
+        {
+            Height = targetHeight;
+            if (!_glassActive)
+                UpdateRoundedRegion();
+        }
         Invalidate();
     }
 
     private void ApplyDpi(int dpi)
     {
-        float newScale = Math.Max(1f, dpi / (float)HighDpiLayoutBaseline);
-        _dpiScale = newScale;
-        RecreateFonts(dpi);
+        _currentDpi = Math.Max(72, dpi);
+        _dpiScale = Math.Max(0.35f, (_currentDpi / (float)LayoutBaselineDpi) * (float)_appearance.Scale);
         int panelWidth = ScaleToDevice(PanelWidth);
         int panelX = _outputBounds.Left + ScaleToDevice(24);
         Bounds = new Rectangle(
@@ -577,27 +784,9 @@ internal sealed class StatusOverlayForm : Form
             _outputBounds.Top + ScaleToDevice(24),
             panelWidth,
             ScaleToDevice(CalculatePanelHeight()));
-        UpdateRoundedRegion();
+        if (!_glassActive)
+            UpdateRoundedRegion();
         Invalidate();
-    }
-
-    private void RecreateFonts(int dpi)
-    {
-        float pixelScale = dpi / 96f / _dpiScale;
-        ReplaceFont(ref _titleFont, 11.33f * pixelScale, FontStyle.Bold);
-        ReplaceFont(ref _stateFont, 11.33f * pixelScale, FontStyle.Bold);
-        ReplaceFont(ref _bodyFont, 12f * pixelScale, FontStyle.Regular);
-        ReplaceFont(ref _sectionFont, 11.33f * pixelScale, FontStyle.Bold);
-        ReplaceFont(ref _captionFont, 10.67f * pixelScale, FontStyle.Regular);
-        ReplaceFont(ref _valueFont, 16f * pixelScale, FontStyle.Bold);
-        ReplaceFont(ref _footerFont, 10.67f * pixelScale, FontStyle.Regular);
-    }
-
-    private static void ReplaceFont(ref Font font, float size, FontStyle style)
-    {
-        Font oldFont = font;
-        font = CreatePixelFont(size, style);
-        oldFont.Dispose();
     }
 
     private int ScaleToDevice(int logicalPixels) =>
@@ -608,7 +797,9 @@ internal sealed class StatusOverlayForm : Form
         if (ClientRectangle.Width <= 0 || ClientRectangle.Height <= 0)
             return;
 
-        using GraphicsPath path = CreateRoundedRectangle(ClientRectangle, ScaleToDevice(OuterRadius));
+        using GraphicsPath path = CreateRoundedRectangle(
+            new RectangleF(0, 0, ClientRectangle.Width, ClientRectangle.Height),
+            ScaleToDevice(OuterRadius));
         Region?.Dispose();
         Region = new Region(path);
     }
@@ -616,18 +807,41 @@ internal sealed class StatusOverlayForm : Form
     private static Font CreatePixelFont(float size, FontStyle style) =>
         new("Segoe UI", size, style, GraphicsUnit.Pixel);
 
-    private static void DrawRoundedFill(Graphics graphics, Rectangle bounds, int radius, Color color)
+    private static float CalculateBaselineOffset(Font largeFont, Font smallFont)
     {
-        using GraphicsPath path = CreateRoundedRectangle(bounds, radius);
-        using SolidBrush brush = new(color);
-        graphics.FillPath(brush, path);
+        float largeAscent = largeFont.Size *
+            largeFont.FontFamily.GetCellAscent(largeFont.Style) /
+            largeFont.FontFamily.GetEmHeight(largeFont.Style);
+        float smallAscent = smallFont.Size *
+            smallFont.FontFamily.GetCellAscent(smallFont.Style) /
+            smallFont.FontFamily.GetEmHeight(smallFont.Style);
+        return largeAscent - smallAscent;
     }
 
-    private static GraphicsPath CreateRoundedRectangle(Rectangle rectangle, int radius)
+    private static StringFormat CreateTypographicFormat(
+        StringAlignment alignment = StringAlignment.Near,
+        bool ellipsis = false)
     {
-        Rectangle bounds = Rectangle.Inflate(rectangle, -1, -1);
-        int diameter = radius * 2;
+        StringFormat format = new(StringFormat.GenericTypographic)
+        {
+            Alignment = alignment,
+            LineAlignment = StringAlignment.Near,
+            FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.MeasureTrailingSpaces
+        };
+        if (ellipsis)
+            format.Trimming = StringTrimming.EllipsisCharacter;
+        return format;
+    }
+
+    private static GraphicsPath CreateRoundedRectangle(RectangleF bounds, float radius)
+    {
+        float diameter = Math.Min(radius * 2f, Math.Min(bounds.Width, bounds.Height));
         GraphicsPath path = new();
+        if (diameter <= 0.1f)
+        {
+            path.AddRectangle(bounds);
+            return path;
+        }
         path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
         path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
         path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
@@ -646,19 +860,16 @@ internal sealed class StatusOverlayForm : Form
 
     private string CreateRouteText() => _analysisOnly
         ? Localization.F("SingleDisplayRoute", _captureName)
-        : $"{_captureName}  →  {_presentName}";
+        : $"{_captureName} → {_presentName}";
 
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
-            _titleFont.Dispose();
-            _stateFont.Dispose();
+            _smallFont.Dispose();
+            _smallSemiboldFont.Dispose();
             _bodyFont.Dispose();
-            _sectionFont.Dispose();
-            _captionFont.Dispose();
             _valueFont.Dispose();
-            _footerFont.Dispose();
         }
         base.Dispose(disposing);
     }

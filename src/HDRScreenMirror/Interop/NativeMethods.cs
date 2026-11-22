@@ -12,6 +12,7 @@ internal static partial class NativeMethods
     internal const int WmDisplayChange = 0x007E;
     internal const int WmHotKey = 0x0312;
     internal const uint ModControl = 0x0002;
+    internal const uint ModShift = 0x0004;
     internal const uint ModNoRepeat = 0x4000;
     internal const uint VirtualKeyF8 = 0x77;
     internal const uint VirtualKeyF9 = 0x78;
@@ -22,7 +23,6 @@ internal static partial class NativeMethods
     internal const uint WaitTimeout = 0x00000102;
     internal const uint WaitFailed = 0xFFFFFFFF;
 
-    private static readonly nint DpiAwarenessContextPerMonitorAwareV2 = new(-4);
     private static readonly nint HwndTopMost = new(-1);
     private const uint CreateWaitableTimerHighResolution = 0x00000002;
     private const uint TimerAllAccess = 0x001F0003;
@@ -33,10 +33,213 @@ internal static partial class NativeMethods
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpNoOwnerZOrder = 0x0200;
     private const uint SwpNoSendChanging = 0x0400;
+    private const uint SwpShowWindow = 0x0040;
+    private const uint DwmwaUseImmersiveDarkModeBefore20H1 = 19;
+    private const uint DwmwaUseImmersiveDarkMode = 20;
+    private const uint DwmwaWindowCornerPreference = 33;
+    private const int DwmwcpDefault = 0;
+    private const int DwmwcpRound = 2;
+    private const int WcaAccentPolicy = 19;
+    private const int AccentDisabled = 0;
+    private const int AccentEnableAcrylicBlurBehind = 4;
+    private const uint Srccopy = 0x00CC0020;
+
+    [LibraryImport("dwmapi.dll")]
+    private static partial int DwmSetWindowAttribute(
+        nint window,
+        uint attribute,
+        ref int value,
+        uint valueSize);
+
+    [LibraryImport("dwmapi.dll")]
+    private static partial int DwmExtendFrameIntoClientArea(nint window, ref Margins margins);
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetProcessDpiAwarenessContext(nint value);
+    private static partial bool SetWindowCompositionAttribute(
+        nint window,
+        ref WindowCompositionAttributeData data);
+
+    [LibraryImport("gdi32.dll")]
+    private static partial nint CreateCompatibleDC(nint hdc);
+
+    [LibraryImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DeleteDC(nint hdc);
+
+    [LibraryImport("gdi32.dll")]
+    private static partial nint SelectObject(nint hdc, nint hObject);
+
+    [LibraryImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DeleteObject(nint hObject);
+
+    [LibraryImport("gdi32.dll")]
+    private static partial nint CreateDIBSection(
+        nint hdc,
+        ref BitmapInfoHeader pbmi,
+        uint usage,
+        out nint ppvBits,
+        nint hSection,
+        uint offset);
+
+    [LibraryImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool BitBlt(
+        nint hdcDest,
+        int xDest,
+        int yDest,
+        int width,
+        int height,
+        nint hdcSrc,
+        int xSrc,
+        int ySrc,
+        uint rop);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool ShowWindow(nint window, int command);
+
+    internal static void ShowTopMostNoActivate(nint window, Rectangle bounds)
+    {
+        if (window == nint.Zero)
+            return;
+
+        SetWindowPos(
+            window,
+            HwndTopMost,
+            bounds.X,
+            bounds.Y,
+            bounds.Width,
+            bounds.Height,
+            SwpNoActivate | SwpNoOwnerZOrder | SwpShowWindow);
+    }
+
+    internal static void HideWindow(nint window)
+    {
+        if (window != nint.Zero)
+            ShowWindow(window, 0);
+    }
+
+    internal static void ApplyImmersiveDarkMode(nint window, bool dark)
+    {
+        if (window == nint.Zero)
+            return;
+
+        try
+        {
+            int enabled = dark ? 1 : 0;
+            if (DwmSetWindowAttribute(window, DwmwaUseImmersiveDarkMode, ref enabled, sizeof(int)) != 0)
+                DwmSetWindowAttribute(window, DwmwaUseImmersiveDarkModeBefore20H1, ref enabled, sizeof(int));
+        }
+        catch
+        {
+        }
+    }
+
+    internal static bool TryApplyAcrylicGlass(nint window, bool enabled, Color tintColor, double opacity)
+    {
+        if (window == nint.Zero)
+            return false;
+
+        try
+        {
+            int corner = enabled ? DwmwcpRound : DwmwcpDefault;
+            DwmSetWindowAttribute(window, DwmwaWindowCornerPreference, ref corner, sizeof(int));
+
+            Margins margins = enabled
+                ? new Margins { Left = -1, Right = -1, Top = -1, Bottom = -1 }
+                : default;
+            DwmExtendFrameIntoClientArea(window, ref margins);
+
+            byte alpha = (byte)Math.Clamp((int)Math.Round(opacity * 218.0), 42, 240);
+            uint gradientColor = ((uint)alpha << 24) | ((uint)tintColor.B << 16) | ((uint)tintColor.G << 8) | tintColor.R;
+            AccentPolicy policy = enabled
+                ? new AccentPolicy
+                {
+                    AccentState = AccentEnableAcrylicBlurBehind,
+                    AccentFlags = 2,
+                    GradientColor = gradientColor
+                }
+                : new AccentPolicy { AccentState = AccentDisabled };
+
+            unsafe
+            {
+                WindowCompositionAttributeData data = new()
+                {
+                    Attribute = WcaAccentPolicy,
+                    Data = (nint)(&policy),
+                    SizeOfData = sizeof(AccentPolicy)
+                };
+                return SetWindowCompositionAttribute(window, ref data);
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    internal static unsafe void BlitPremultipliedBitmap(Graphics destination, Bitmap bitmap)
+    {
+        int width = bitmap.Width;
+        int height = bitmap.Height;
+        if (width <= 0 || height <= 0)
+            return;
+
+        System.Drawing.Imaging.BitmapData sourceData = bitmap.LockBits(
+            new Rectangle(0, 0, width, height),
+            System.Drawing.Imaging.ImageLockMode.ReadOnly,
+            System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        nint destHdc = nint.Zero;
+        nint memDc = nint.Zero;
+        nint dib = nint.Zero;
+        nint oldObj = nint.Zero;
+        try
+        {
+            destHdc = destination.GetHdc();
+            memDc = CreateCompatibleDC(destHdc);
+            BitmapInfoHeader header = new()
+            {
+                Size = (uint)sizeof(BitmapInfoHeader),
+                Width = width,
+                Height = -height,
+                Planes = 1,
+                BitCount = 32,
+                Compression = 0
+            };
+            dib = CreateDIBSection(memDc, ref header, 0, out nint dibBits, nint.Zero, 0);
+            if (dib == nint.Zero || dibBits == nint.Zero)
+                return;
+
+            int rowBytes = width * 4;
+            byte* srcPtr = (byte*)sourceData.Scan0;
+            byte* dstPtr = (byte*)dibBits;
+            for (int y = 0; y < height; y++)
+            {
+                Buffer.MemoryCopy(
+                    srcPtr + y * sourceData.Stride,
+                    dstPtr + y * rowBytes,
+                    rowBytes,
+                    rowBytes);
+            }
+
+            oldObj = SelectObject(memDc, dib);
+            BitBlt(destHdc, 0, 0, width, height, memDc, 0, 0, Srccopy);
+        }
+        finally
+        {
+            if (oldObj != nint.Zero && memDc != nint.Zero)
+                SelectObject(memDc, oldObj);
+            if (dib != nint.Zero)
+                DeleteObject(dib);
+            if (memDc != nint.Zero)
+                DeleteDC(memDc);
+            if (destHdc != nint.Zero)
+                destination.ReleaseHdc(destHdc);
+            bitmap.UnlockBits(sourceData);
+        }
+    }
 
     [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -134,17 +337,6 @@ internal static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool AttachConsole(uint processId);
 
-    internal static void TryEnablePerMonitorDpiAwareness()
-    {
-        try
-        {
-            SetProcessDpiAwarenessContext(DpiAwarenessContextPerMonitorAwareV2);
-        }
-        catch (EntryPointNotFoundException)
-        {
-        }
-    }
-
     internal static nint CreateFrameRateTimer()
     {
         try
@@ -238,4 +430,45 @@ internal static partial class NativeMethods
             Left < other.Right && Right > other.Left && Top < other.Bottom && Bottom > other.Top;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Margins
+    {
+        internal int Left;
+        internal int Right;
+        internal int Top;
+        internal int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct AccentPolicy
+    {
+        internal int AccentState;
+        internal int AccentFlags;
+        internal uint GradientColor;
+        internal int AnimationId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowCompositionAttributeData
+    {
+        internal int Attribute;
+        internal nint Data;
+        internal int SizeOfData;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BitmapInfoHeader
+    {
+        internal uint Size;
+        internal int Width;
+        internal int Height;
+        internal ushort Planes;
+        internal ushort BitCount;
+        internal uint Compression;
+        internal uint SizeImage;
+        internal int XPelsPerMeter;
+        internal int YPelsPerMeter;
+        internal uint ClrUsed;
+        internal uint ClrImportant;
+    }
 }

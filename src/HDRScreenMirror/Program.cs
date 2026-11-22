@@ -10,11 +10,10 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        NativeMethods.TryEnablePerMonitorDpiAwareness();
-
         if (args.Any(x => string.Equals(x, "--list", StringComparison.OrdinalIgnoreCase)))
         {
             NativeMethods.AttachToParentConsole();
+            ApplicationConfiguration.Initialize();
             PrintDisplays();
             return;
         }
@@ -40,6 +39,7 @@ internal static class Program
 
         AppSettings settings = AppSettings.Load();
         Localization.SetPreference(settings.Language);
+        HextaTheme.SetPreference(settings.UiTheme);
         ApplicationConfiguration.Initialize();
         Application.ThreadException += (_, eventArgs) =>
         {
@@ -107,6 +107,7 @@ internal static class Program
 
             List<MirrorForm> mirrorWindows = [];
             List<StatusOverlayForm> statusOverlays = [];
+            List<CieOverlayForm> cieOverlays = [];
             List<AnalysisOverlayForm> analysisOverlays = [];
             List<MirrorOutputBinding> bindings = [];
             foreach (DisplayTarget target in targets)
@@ -118,7 +119,10 @@ internal static class Program
                 StatusOverlayForm statusOverlay = new(target.Bounds, capture, target, false, true, false, false);
                 statusOverlay.Show(mirrorWindow);
                 statusOverlays.Add(statusOverlay);
-                AnalysisOverlayForm analysisOverlay = new(target.Bounds, capture, true, true, false);
+                CieOverlayForm cieOverlay = new(target.Bounds, false);
+                cieOverlay.Show(mirrorWindow);
+                cieOverlays.Add(cieOverlay);
+                AnalysisOverlayForm analysisOverlay = new(target.Bounds, capture, true, false);
                 analysisOverlay.Show(mirrorWindow);
                 analysisOverlays.Add(analysisOverlay);
             }
@@ -165,7 +169,7 @@ internal static class Program
             };
             session.GamutChanged += telemetry =>
             {
-                foreach (AnalysisOverlayForm overlay in analysisOverlays)
+                foreach (CieOverlayForm overlay in cieOverlays)
                 {
                     if (overlay.IsHandleCreated && !overlay.IsDisposed)
                         overlay.BeginInvoke(() => overlay.UpdateGamut(telemetry));
@@ -184,6 +188,11 @@ internal static class Program
 
             session.Stop();
             foreach (AnalysisOverlayForm overlay in analysisOverlays)
+            {
+                overlay.Close();
+                overlay.Dispose();
+            }
+            foreach (CieOverlayForm overlay in cieOverlays)
             {
                 overlay.Close();
                 overlay.Dispose();
