@@ -8,8 +8,16 @@ internal sealed class AppSettings
 
     public bool MinimizeToTrayOnClose { get; set; }
     public string Language { get; set; } = Localization.Automatic;
+    public string UiTheme { get; set; } = "auto";
     public string ScreenshotSaveMode { get; set; } = "automatic";
     public string ScreenshotDirectory { get; set; } = string.Empty;
+    public bool CopyScreenshotToClipboard { get; set; } = true;
+    public double OverlayOpacity { get; set; } = OverlayAppearance.DefaultOpacity;
+    public double OverlayScale { get; set; } = OverlayAppearance.DefaultScale;
+    public bool OverlayGlassEnabled { get; set; } = OverlayAppearance.DefaultGlassEnabled;
+    public int OverlayUpdateHz { get; set; } = 4;
+    public string OverlayBackgroundColor { get; set; } = OverlayAppearance.DefaultBackgroundHex;
+    public string OverlayAccentColor { get; set; } = OverlayAppearance.DefaultAccentHex;
     public string FrameRateMode { get; set; } = "output";
     public int FrameRateLimit { get; set; } = 60;
     public string OperationMode { get; set; } = "mirror";
@@ -18,6 +26,14 @@ internal sealed class AppSettings
     public bool AblEstimationEnabled { get; set; }
     public string ActiveAblProfileId { get; set; } = string.Empty;
     public List<AblProfile> AblProfiles { get; set; } = [];
+
+    public OverlayAppearance GetOverlayAppearance() =>
+        OverlayAppearance.FromSettings(
+            OverlayOpacity,
+            OverlayScale,
+            OverlayGlassEnabled,
+            OverlayBackgroundColor,
+            OverlayAccentColor);
 
     public static AppSettings Load()
     {
@@ -60,12 +76,41 @@ internal sealed class AppSettings
             AblEstimationEnabled = false;
     }
 
-    public void Save()
+    public void Save(bool allowClearingAblProfiles = false)
     {
         try
         {
             string path = GetSettingsPath();
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+            if (File.Exists(path))
+            {
+                if (!allowClearingAblProfiles && AblProfiles.Count == 0)
+                {
+                    try
+                    {
+                        AppSettings? existing = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path));
+                        if (existing?.AblProfiles is { Count: > 0 } existingProfiles)
+                        {
+                            AblProfiles = existingProfiles;
+                            if (string.IsNullOrWhiteSpace(ActiveAblProfileId))
+                                ActiveAblProfileId = existing.ActiveAblProfileId;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                try
+                {
+                    File.Copy(path, path + ".bak", overwrite: true);
+                }
+                catch
+                {
+                }
+            }
+
             string temporaryPath = path + ".tmp";
             File.WriteAllText(temporaryPath, JsonSerializer.Serialize(this, SerializerOptions));
             File.Move(temporaryPath, path, true);

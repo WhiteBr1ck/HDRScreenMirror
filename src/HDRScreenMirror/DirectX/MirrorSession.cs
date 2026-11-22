@@ -24,8 +24,7 @@ internal sealed class MirrorSession : IDisposable
     private const int ErrorAccessDenied = unchecked((int)0x80070005);
     private const int DxgiErrorAccessLost = unchecked((int)0x887A0026);
     private const int DxgiErrorWaitTimeout = unchecked((int)0x887A0027);
-    private static readonly TimeSpan PointerAnalysisInterval = TimeSpan.FromMilliseconds(100);
-    private static readonly TimeSpan FrameAnalysisInterval = TimeSpan.FromMilliseconds(250);
+    private int _analysisUpdateHz = 4;
 
     private static readonly FeatureLevel[] FeatureLevels =
     [
@@ -180,6 +179,9 @@ internal sealed class MirrorSession : IDisposable
 
     public void SetGamutAnalysis(bool enabled) =>
         Volatile.Write(ref _gamutAnalysisEnabled, enabled ? 1 : 0);
+
+    public void SetAnalysisUpdateHz(int hz) =>
+        Volatile.Write(ref _analysisUpdateHz, Math.Clamp(hz, 1, 20));
 
     public void SetAblProfile(AblProfile? profile)
     {
@@ -473,6 +475,7 @@ internal sealed class MirrorSession : IDisposable
         Stopwatch reportingClock = Stopwatch.StartNew();
         Stopwatch luminanceClock = Stopwatch.StartNew();
         Stopwatch frameLuminanceClock = Stopwatch.StartNew();
+        Stopwatch gamutClock = Stopwatch.StartNew();
         long frames = 0;
         long intervalFrames = 0;
 
@@ -493,20 +496,27 @@ internal sealed class MirrorSession : IDisposable
                 frames++;
                 intervalFrames++;
 
-                if (_analyzeLuminance && luminanceClock.Elapsed >= PointerAnalysisInterval)
+                int updateHz = Math.Clamp(Volatile.Read(ref _analysisUpdateHz), 1, 20);
+                TimeSpan frameInterval = TimeSpan.FromMilliseconds(1000.0 / updateHz);
+                TimeSpan pointerInterval = TimeSpan.FromMilliseconds(Math.Min(100.0, 1000.0 / updateHz));
+                TimeSpan gamutInterval = TimeSpan.FromMilliseconds(Math.Max(100.0, 1000.0 / updateHz));
+
+                if (_analyzeLuminance && luminanceClock.Elapsed >= pointerInterval)
                 {
                     bool refreshFrameLuminance =
                         !_hasFrameLuminance ||
-                        frameLuminanceClock.Elapsed >= FrameAnalysisInterval ||
+                        frameLuminanceClock.Elapsed >= frameInterval ||
                         _lastAnalyzedAblProfileVersion != Volatile.Read(ref _ablProfileVersion);
                     LuminanceTelemetry? luminance = AnalyzeLuminance(refreshFrameLuminance);
                     if (luminance is not null)
                         LuminanceChanged?.Invoke(luminance);
-                    if (refreshFrameLuminance && Volatile.Read(ref _gamutAnalysisEnabled) != 0)
+                    if (Volatile.Read(ref _gamutAnalysisEnabled) != 0 &&
+                        (!_hasFrameLuminance || gamutClock.Elapsed >= gamutInterval))
                     {
                         GamutTelemetry? gamut = AnalyzeGamut();
                         if (gamut is not null)
                             GamutChanged?.Invoke(gamut);
+                        gamutClock.Restart();
                     }
                     if (refreshFrameLuminance)
                         frameLuminanceClock.Restart();
@@ -1304,6 +1314,48 @@ internal sealed class MirrorSession : IDisposable
                         clippedSum += result.ClippedSum;
                         clippedMinimum = Math.Min(clippedMinimum, result.ClippedMinimum);
                         clippedMaximum = Math.Max(clippedMaximum, result.ClippedMaximum);
+                    }
+
+                    // Stabilize marker coordinates on uniform/tied regions: among groups tied within
+                    // noise tolerance of the peak/floor, pick the one closest to the previous marker.
+                    if (_hasFrameLuminance && count > 0)
+                    {
+                        double maxTolerance = Math.Max(0.25, maximum * 0.002);
+                        double minTolerance = Math.Max(0.01, minimum * 0.02);
+                        long bestMaxDistSq = long.MaxValue;
+                        long bestMinDistSq = long.MaxValue;
+                        for (int i = 0; i < _frameStatsCount; i++)
+                        {
+                            LuminanceGroupResult result = results[i];
+                            if (result.Count == 0)
+                                continue;
+
+                            if (result.Maximum >= maximum - maxTolerance)
+                            {
+                                long dx = (long)result.MaximumX - _lastFrameMaximumX;
+                                long dy = (long)result.MaximumY - _lastFrameMaximumY;
+                                long distSq = dx * dx + dy * dy;
+                                if (distSq < bestMaxDistSq)
+                                {
+                                    bestMaxDistSq = distSq;
+                                    maximumX = result.MaximumX;
+                                    maximumY = result.MaximumY;
+                                }
+                            }
+
+                            if (result.Minimum <= minimum + minTolerance)
+                            {
+                                long dx = (long)result.MinimumX - _lastFrameMinimumX;
+                                long dy = (long)result.MinimumY - _lastFrameMinimumY;
+                                long distSq = dx * dx + dy * dy;
+                                if (distSq < bestMinDistSq)
+                                {
+                                    bestMinDistSq = distSq;
+                                    minimumX = result.MinimumX;
+                                    minimumY = result.MinimumY;
+                                }
+                            }
+                        }
                     }
                 }
             }

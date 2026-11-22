@@ -66,11 +66,16 @@ float4 PSMain(VertexOutput input) : SV_Target
 
     if (FalseColorMode == 2)
     {
-        float luminanceNits = CalculateLuminanceNits(rgbNits, InputMode);
+        float luminanceNits = max(CalculateLuminanceNits(rgbNits, InputMode), 0.0);
+        float grayScRgb = luminanceNits / 80.0;
         if (luminanceNits < 0.01)
-            return float4(0.0, 0.0, 0.0, 1.0);
+            return float4(grayScRgb, grayScRgb, grayScRgb, 1.0);
+
         float3 linearRgb = DecodeLinearRgbForGamut(source, InputMode);
         uint category = ClassifyGamut(linearRgb, InputMode);
+        if (category == 0)
+            return float4(grayScRgb, grayScRgb, grayScRgb, 1.0);
+
         float3 falseColorSrgb = MapGamutCategoryToFalseColor(category);
         return float4(SrgbToLinear(falseColorSrgb) * (PaperWhiteNits / 80.0), 1.0);
     }

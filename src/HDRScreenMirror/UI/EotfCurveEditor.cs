@@ -5,13 +5,13 @@ namespace HDRScreenMirror.UI;
 
 internal sealed class EotfCurveEditor : Control
 {
-    private static readonly Color GridColor = Color.FromArgb(228, 232, 239);
-    private static readonly Color AxisColor = Color.FromArgb(139, 148, 163);
-    private static readonly Color ReferenceColor = Color.FromArgb(164, 171, 183);
-    private static readonly Color CurveColor = Color.FromArgb(45, 112, 225);
-    private static readonly Color DisabledCurveColor = Color.FromArgb(174, 181, 192);
-    private static readonly Color TextColor = Color.FromArgb(92, 101, 116);
-    private static readonly Color SurfaceColor = Color.White;
+    private static Color GridColor => HextaTheme.Border;
+    private static Color AxisColor => HextaTheme.TextMuted;
+    private static Color ReferenceColor => HextaTheme.TextMuted;
+    private static Color CurveColor => HextaTheme.IsDark ? Color.FromArgb(120, 178, 255) : Color.FromArgb(24, 24, 27);
+    private static Color DisabledCurveColor => HextaTheme.TextDisabled;
+    private static Color TextColor => HextaTheme.TextSecondary;
+    private static Color SurfaceColor => HextaTheme.Surface;
 
     private readonly double[] _values = new double[AblProfile.EotfControlPointCount];
     private double _referencePeakNits;

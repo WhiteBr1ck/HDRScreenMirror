@@ -15,7 +15,7 @@ internal static class HdrScreenshotCapture
     public static unsafe Bitmap ConvertToSdrBitmap(
         HdrScreenshotFrame frame,
         float paperWhiteNits,
-        bool falseColorEnabled)
+        FalseColorMode falseColorMode)
     {
         int expectedLength = checked(
             frame.Width * frame.Height * HdrScreenshotFrame.BytesPerPixel);
@@ -55,7 +55,7 @@ internal static class HdrScreenshotCapture
                             ref green,
                             ref blue,
                             paperWhiteNits,
-                            falseColorEnabled);
+                            falseColorMode);
                         WriteBgra(destinationRow + x * 4, red, green, blue);
                     }
                 }
@@ -79,14 +79,18 @@ internal static class HdrScreenshotCapture
         ref float greenNits,
         ref float blueNits,
         float paperWhiteNits,
-        bool falseColorEnabled)
+        FalseColorMode falseColorMode)
     {
         float red = redNits / paperWhiteNits;
         float green = greenNits / paperWhiteNits;
         float blue = blueNits / paperWhiteNits;
         float gray;
 
-        if (falseColorEnabled)
+        bool preserveFalseColor = falseColorMode == FalseColorMode.Luminance ||
+            (falseColorMode == FalseColorMode.Gamut &&
+             (MathF.Abs(red - green) > 1e-3f || MathF.Abs(green - blue) > 1e-3f));
+
+        if (preserveFalseColor)
         {
             gray = Math.Clamp(
                 0.2126f * red + 0.7152f * green + 0.0722f * blue,

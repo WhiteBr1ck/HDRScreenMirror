@@ -1,5 +1,5 @@
 using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
+using System.Drawing.Text;
 using HDRScreenMirror.Interop;
 using Vortice.DXGI;
 
@@ -10,47 +10,50 @@ internal sealed class AnalysisOverlayForm : Form
     private const int WsExTransparent = 0x00000020;
     private const int WsExToolWindow = 0x00000080;
     private const int WsExNoActivate = 0x08000000;
-    private const int CiePanelWidth = 580;
-    private const int CiePanelHeight = 650;
-    private const int ScreenshotToastWidth = 320;
-    private const int ScreenshotToastHeight = 58;
-    private const float DiagramMaximum = 0.65f;
+    private const int LayoutBaselineDpi = 144;
+    private const float DesignFontScale = LayoutBaselineDpi / 96f;
+
+    private const int ToastHeight = 42;
+    private const int ToastRadius = 10;
+    private const float HairlineWidth = 0.5f;
 
     private static readonly Color TransparencyColor = Color.FromArgb(1, 2, 3);
-    private static readonly Color SrgbColor = Color.FromArgb(71, 214, 255);
-    private static readonly Color DciP3Color = Color.FromArgb(255, 213, 79);
-    private static readonly Color Bt2020Color = Color.FromArgb(229, 105, 255);
-    private static readonly Color MaximumColor = Color.FromArgb(255, 104, 92);
-    private static readonly Color MinimumColor = Color.FromArgb(74, 210, 255);
+    private static readonly Color MaximumColor = Color.FromArgb(255, 102, 92);
+    private static readonly Color MinimumColor = Color.FromArgb(92, 198, 245);
+    private static readonly Color SuccessColor = Color.FromArgb(63, 209, 132);
+
+    private OverlayAppearance _appearance = OverlayAppearance.Default;
+    private Color SurfaceColor => _appearance.BackgroundColor == TransparencyColor
+        ? Color.FromArgb(2, 3, 4)
+        : _appearance.BackgroundColor;
+    private Color BorderColor => _appearance.BorderColor;
+    private Color PrimaryTextColor => _appearance.PrimaryTextColor;
 
     private readonly bool _excludeFromCapture;
     private readonly ModeRotation _rotation;
     private readonly Rectangle _outputBounds;
-    private readonly Font _titleFont = new("Segoe UI", 11f, FontStyle.Bold);
-    private readonly Font _bodyFont = new("Segoe UI", 9.5f, FontStyle.Regular);
-    private readonly Font _smallFont = new("Segoe UI", 8.5f, FontStyle.Regular);
-    private readonly Font _markerFont = new("Segoe UI", 9f, FontStyle.Bold);
-    private readonly Font _toastFont = new("Segoe UI", 11f, FontStyle.Bold);
+
+    private readonly Font _markerFont = CreatePixelFont(15f * DesignFontScale, FontStyle.Bold);
+    private readonly Font _toastFont = CreatePixelFont(13.5f * DesignFontScale, FontStyle.Bold);
+
     private readonly System.Windows.Forms.Timer _screenshotToastTimer = new() { Interval = 2000 };
-    private bool _showCie;
     private bool _showMarkers;
     private bool _showScreenshotToast;
+    private string _screenshotToastKey = "ScreenshotSuccessToast";
     private uint _frameWidth;
     private uint _frameHeight;
-    private GamutTelemetry? _gamut;
     private LuminanceTelemetry? _luminance;
-    private Bitmap? _heatmap;
+    private float _dpiScale = 1f;
+    private int _currentDpi = LayoutBaselineDpi;
 
     public AnalysisOverlayForm(
         Rectangle outputBounds,
         DisplayTarget capture,
-        bool showCie,
         bool showMarkers,
         bool excludeFromCapture = true)
     {
         _rotation = capture.Rotation;
         _outputBounds = outputBounds;
-        _showCie = showCie;
         _showMarkers = showMarkers;
         _excludeFromCapture = excludeFromCapture;
 
@@ -80,13 +83,7 @@ internal sealed class AnalysisOverlayForm : Form
         }
     }
 
-    internal bool HasVisibleContent => _showCie || _showMarkers || _showScreenshotToast;
-
-    internal void SetShowCie(bool visible)
-    {
-        _showCie = visible;
-        Invalidate();
-    }
+    internal bool HasVisibleContent => _showMarkers || _showScreenshotToast;
 
     internal void SetShowMarkers(bool visible)
     {
@@ -94,8 +91,11 @@ internal sealed class AnalysisOverlayForm : Form
         Invalidate();
     }
 
-    internal void ShowScreenshotNotification()
+    internal void ShowScreenshotNotification(string? messageKey = null)
     {
+        _screenshotToastKey = string.IsNullOrWhiteSpace(messageKey)
+            ? "ScreenshotSuccessToast"
+            : messageKey;
         _showScreenshotToast = true;
         _screenshotToastTimer.Stop();
         _screenshotToastTimer.Start();
@@ -113,7 +113,7 @@ internal sealed class AnalysisOverlayForm : Form
 
         _showScreenshotToast = false;
         Invalidate();
-        if (!_showCie && !_showMarkers)
+        if (!_showMarkers)
             Hide();
     }
 
@@ -125,26 +125,37 @@ internal sealed class AnalysisOverlayForm : Form
 
     internal void UpdateLuminance(LuminanceTelemetry telemetry)
     {
+        LuminanceTelemetry? previous = _luminance;
         _luminance = telemetry;
-        if (_showMarkers)
-            Invalidate();
-    }
+        if (!_showMarkers)
+            return;
 
-    internal void UpdateGamut(GamutTelemetry telemetry)
-    {
-        _gamut = telemetry;
-        Bitmap? previous = _heatmap;
-        _heatmap = CreateHeatmap(telemetry);
-        previous?.Dispose();
-        if (_showCie)
-            Invalidate();
+        if (previous is not null &&
+            previous.MaximumX == telemetry.MaximumX &&
+            previous.MaximumY == telemetry.MaximumY &&
+            previous.MinimumX == telemetry.MinimumX &&
+            previous.MinimumY == telemetry.MinimumY &&
+            Math.Abs(previous.MaximumNits - telemetry.MaximumNits) < 0.05 &&
+            Math.Abs(previous.MinimumNits - telemetry.MinimumNits) < 0.005)
+        {
+            return;
+        }
+
+        Invalidate();
     }
 
     internal void ApplyLanguage() => Invalidate();
 
+    internal void ApplyAppearance(OverlayAppearance appearance)
+    {
+        _appearance = appearance;
+        ApplyDpi(_currentDpi);
+    }
+
     protected override void OnShown(EventArgs eventArgs)
     {
         base.OnShown(eventArgs);
+        ApplyDpi(DeviceDpi);
         SetCaptureExclusion(true);
         BringToFront();
     }
@@ -154,16 +165,22 @@ internal sealed class AnalysisOverlayForm : Form
         if (!_excludeFromCapture || !IsHandleCreated)
             return !excluded;
 
-        bool applied = NativeMethods.SetWindowDisplayAffinity(
+        return NativeMethods.SetWindowDisplayAffinity(
             Handle,
             excluded ? NativeMethods.WdaExcludeFromCapture : NativeMethods.WdaNone);
-        return applied;
     }
 
     protected override void OnDpiChanged(DpiChangedEventArgs eventArgs)
     {
         base.OnDpiChanged(eventArgs);
         Bounds = _outputBounds;
+        ApplyDpi(eventArgs.DeviceDpiNew);
+    }
+
+    private void ApplyDpi(int dpi)
+    {
+        _currentDpi = Math.Max(72, dpi);
+        _dpiScale = Math.Max(0.35f, (_currentDpi / (float)LayoutBaselineDpi) * (float)_appearance.Scale);
         Invalidate();
     }
 
@@ -180,11 +197,13 @@ internal sealed class AnalysisOverlayForm : Form
 
     internal void DrawScreenshot(Graphics graphics)
     {
+        if (ClientSize.Width <= 0 || ClientSize.Height <= 0)
+            return;
+
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
 
-        if (_showCie)
-            DrawCiePanel(graphics);
         if (_showMarkers && _luminance is not null && _frameWidth > 0 && _frameHeight > 0)
             DrawLuminanceMarkers(graphics, _luminance);
         if (_showScreenshotToast)
@@ -193,180 +212,103 @@ internal sealed class AnalysisOverlayForm : Form
 
     private void DrawScreenshotNotification(Graphics graphics)
     {
-        Rectangle toast = new(
-            (ClientSize.Width - ScreenshotToastWidth) / 2,
-            ClientSize.Height - ScreenshotToastHeight - 52,
-            ScreenshotToastWidth,
-            ScreenshotToastHeight);
-        using GraphicsPath toastPath = CreateRoundedRectangle(toast, 18);
-        using SolidBrush toastBrush = new(Color.FromArgb(20, 22, 28));
-        using Pen toastOutline = new(Color.FromArgb(54, 255, 255, 255), 1);
+        string text = Localization.T(_screenshotToastKey);
+        using StringFormat typographic = CreateTypographicFormat();
+        SizeF textSize = graphics.MeasureString(text, _toastFont, 320, typographic);
+        float designWidth = Math.Max(160f, textSize.Width + 56f);
+        float scaledWidth = designWidth * _dpiScale;
+        float scaledHeight = ToastHeight * _dpiScale;
+        float originX = (ClientSize.Width - scaledWidth) * 0.5f;
+        float originY = ClientSize.Height - scaledHeight - 40f * _dpiScale;
+
+        GraphicsState state = graphics.Save();
+        graphics.TranslateTransform(originX, originY);
+        graphics.ScaleTransform(_dpiScale, _dpiScale);
+
+        RectangleF toast = new(0.25f, 0.25f, designWidth - 0.5f, ToastHeight - 0.5f);
+        using GraphicsPath toastPath = CreateRoundedRectangle(toast, ToastRadius);
+        using SolidBrush toastBrush = new(SurfaceColor);
+        using Pen toastOutline = new(BorderColor, HairlineWidth);
         graphics.FillPath(toastBrush, toastPath);
         graphics.DrawPath(toastOutline, toastPath);
 
-        const int iconSize = 28;
-        Rectangle icon = new(toast.Left + 18, toast.Top + 15, iconSize, iconSize);
-        using SolidBrush iconBrush = new(Color.FromArgb(43, 190, 105));
-        graphics.FillEllipse(iconBrush, icon);
-        using Pen checkPen = new(Color.White, 2.5f)
-        {
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round,
-            LineJoin = LineJoin.Round
-        };
-        graphics.DrawLines(checkPen,
-        [
-            new PointF(icon.Left + 7, icon.Top + 14),
-            new PointF(icon.Left + 12, icon.Top + 19),
-            new PointF(icon.Left + 21, icon.Top + 9)
-        ]);
+        const float sqSize = 7f;
+        float sqX = 18f;
+        float sqY = (ToastHeight - sqSize) * 0.5f;
+        using GraphicsPath sqPath = CreateRoundedRectangle(new RectangleF(sqX, sqY, sqSize, sqSize), 1.5f);
+        using SolidBrush sqBrush = new(SuccessColor);
+        graphics.FillPath(sqBrush, sqPath);
 
-        using SolidBrush textBrush = new(Color.FromArgb(242, 245, 250));
-        using StringFormat format = new()
-        {
-            Alignment = StringAlignment.Near,
-            LineAlignment = StringAlignment.Center
-        };
-        Rectangle textBounds = new(icon.Right + 13, toast.Top, toast.Width - 76, toast.Height);
-        graphics.DrawString(
-            Localization.T("ScreenshotSuccessToast"),
-            _toastFont,
-            textBrush,
-            textBounds,
-            format);
-    }
+        using SolidBrush textBrush = new(PrimaryTextColor);
+        float textY = (ToastHeight - _toastFont.Height) * 0.5f;
+        graphics.DrawString(text, _toastFont, textBrush, sqX + sqSize + 10f, textY, typographic);
 
-    private void DrawCiePanel(Graphics graphics)
-    {
-        Rectangle panel = new(24, ClientSize.Height - CiePanelHeight - 24, CiePanelWidth, CiePanelHeight);
-        using GraphicsPath panelPath = CreateRoundedRectangle(panel, 18);
-        using SolidBrush panelBrush = new(Color.FromArgb(20, 22, 28));
-        using Pen panelOutline = new(Color.FromArgb(54, 255, 255, 255), 1);
-        graphics.FillPath(panelBrush, panelPath);
-        graphics.DrawPath(panelOutline, panelPath);
-
-        using SolidBrush primaryBrush = new(Color.FromArgb(242, 245, 250));
-        using SolidBrush secondaryBrush = new(Color.FromArgb(164, 174, 190));
-        graphics.DrawString("CIE 1976 UCS  u′v′", _titleFont, primaryBrush, panel.Left + 20, panel.Top + 15);
-        graphics.DrawString(Localization.T("CieFrameUsage"), _smallFont, secondaryBrush, panel.Left + 20, panel.Top + 36);
-
-        Rectangle plot = new(panel.Left + 65, panel.Top + 62, 450, 450);
-        using SolidBrush plotBrush = new(Color.FromArgb(10, 12, 17));
-        graphics.FillRectangle(plotBrush, plot);
-        DrawCieGrid(graphics, plot);
-
-        if (_heatmap is not null)
-        {
-            InterpolationMode previousMode = graphics.InterpolationMode;
-            graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
-            graphics.DrawImage(_heatmap, plot);
-            graphics.InterpolationMode = previousMode;
-        }
-
-        DrawGamutTriangle(graphics, plot, SrgbColor, [(0.64f, 0.33f), (0.30f, 0.60f), (0.15f, 0.06f)]);
-        DrawGamutTriangle(graphics, plot, DciP3Color, [(0.68f, 0.32f), (0.265f, 0.69f), (0.15f, 0.06f)]);
-        DrawGamutTriangle(graphics, plot, Bt2020Color, [(0.708f, 0.292f), (0.170f, 0.797f), (0.131f, 0.046f)]);
-
-        double srgb = _gamut?.SrgbPercentage ?? 0;
-        double dciP3 = _gamut?.DciP3Percentage ?? 0;
-        double bt2020 = _gamut?.Bt2020Percentage ?? 0;
-        double outside = _gamut?.OutsidePercentage ?? 0;
-        int legendY = panel.Top + 545;
-        DrawLegend(graphics, panel.Left + 24, legendY, SrgbColor, "sRGB", srgb);
-        DrawLegend(graphics, panel.Left + 300, legendY, DciP3Color, "DCI-P3", dciP3);
-        DrawLegend(graphics, panel.Left + 24, legendY + 34, Bt2020Color, "BT.2020", bt2020);
-        DrawLegend(graphics, panel.Left + 300, legendY + 34, Color.FromArgb(142, 151, 168), Localization.T("CieOutside"), outside);
-
-        string footer = _gamut is null
-            ? Localization.T("CieWaiting")
-            : Localization.F("CieAnalyzedPixels", _gamut.AnalyzedPixels);
-        graphics.DrawString(footer, _smallFont, secondaryBrush, panel.Left + 24, panel.Bottom - 28);
-    }
-
-    private void DrawCieGrid(Graphics graphics, Rectangle plot)
-    {
-        using Pen gridPen = new(Color.FromArgb(30, 255, 255, 255), 1);
-        using Pen borderPen = new(Color.FromArgb(75, 255, 255, 255), 1);
-        using SolidBrush labelBrush = new(Color.FromArgb(125, 136, 154));
-        for (float value = 0.1f; value <= 0.6f; value += 0.1f)
-        {
-            float x = plot.Left + value / DiagramMaximum * plot.Width;
-            float y = plot.Bottom - value / DiagramMaximum * plot.Height;
-            graphics.DrawLine(gridPen, x, plot.Top, x, plot.Bottom);
-            graphics.DrawLine(gridPen, plot.Left, y, plot.Right, y);
-            graphics.DrawString(value.ToString("F1"), _smallFont, labelBrush, x - 9, plot.Bottom + 3);
-            graphics.DrawString(value.ToString("F1"), _smallFont, labelBrush, plot.Left - 28, y - 7);
-        }
-        graphics.DrawRectangle(borderPen, plot);
-        graphics.DrawString("u′", _bodyFont, labelBrush, plot.Right - 14, plot.Bottom + 3);
-        graphics.DrawString("v′", _bodyFont, labelBrush, plot.Left - 27, plot.Top - 3);
-    }
-
-    private void DrawGamutTriangle(
-        Graphics graphics,
-        Rectangle plot,
-        Color color,
-        (float X, float Y)[] xyPrimaries)
-    {
-        PointF[] points = xyPrimaries
-            .Select(primary => XyToUv(primary.X, primary.Y))
-            .Select(uv => new PointF(
-                plot.Left + uv.X / DiagramMaximum * plot.Width,
-                plot.Bottom - uv.Y / DiagramMaximum * plot.Height))
-            .ToArray();
-        using Pen outline = new(color, 2f) { LineJoin = LineJoin.Round };
-        graphics.DrawPolygon(outline, points);
-    }
-
-    private void DrawLegend(Graphics graphics, int x, int y, Color color, string label, double percentage)
-    {
-        using SolidBrush dotBrush = new(color);
-        using SolidBrush textBrush = new(Color.FromArgb(225, 230, 239));
-        graphics.FillEllipse(dotBrush, x, y + 4, 9, 9);
-        graphics.DrawString($"{label}  {percentage:F1}%", _bodyFont, textBrush, x + 16, y);
+        graphics.Restore(state);
     }
 
     private void DrawLuminanceMarkers(Graphics graphics, LuminanceTelemetry telemetry)
     {
         PointF maximum = MapSourcePosition(telemetry.MaximumX, telemetry.MaximumY);
         PointF minimum = MapSourcePosition(telemetry.MinimumX, telemetry.MinimumY);
-        DrawMarker(graphics, maximum, MaximumColor, Localization.T("MarkerMaximum"), telemetry.MaximumNits, true);
-        DrawMarker(graphics, minimum, MinimumColor, Localization.T("MarkerMinimum"), telemetry.MinimumNits, false);
+        DrawMinimalMarker(graphics, maximum, MaximumColor, Localization.T("MarkerMaximum"), telemetry.MaximumNits, labelAbove: true);
+        DrawMinimalMarker(graphics, minimum, MinimumColor, Localization.T("MarkerMinimum"), telemetry.MinimumNits, labelAbove: false);
     }
 
-    private void DrawMarker(
+    // High-visibility clean crosshair + bare number with crisp dark outline (no box).
+    private void DrawMinimalMarker(
         Graphics graphics,
         PointF point,
         Color color,
-        string label,
+        string prefix,
         double nits,
         bool labelAbove)
     {
-        using Pen shadow = new(Color.Black, 5f);
-        using Pen marker = new(color, 2.5f);
-        graphics.DrawEllipse(shadow, point.X - 11, point.Y - 11, 22, 22);
-        graphics.DrawLine(shadow, point.X - 16, point.Y, point.X + 16, point.Y);
-        graphics.DrawLine(shadow, point.X, point.Y - 16, point.X, point.Y + 16);
-        graphics.DrawEllipse(marker, point.X - 11, point.Y - 11, 22, 22);
-        graphics.DrawLine(marker, point.X - 16, point.Y, point.X + 16, point.Y);
-        graphics.DrawLine(marker, point.X, point.Y - 16, point.X, point.Y + 16);
+        float arm = 10f * _dpiScale;
+        float haloWidth = Math.Max(3.2f, 4.0f * _dpiScale);
+        float lineWidth = Math.Max(1.6f, 2.0f * _dpiScale);
 
-        string value = nits < 1 ? $"{nits:F3} nits" : $"{nits:F1} nits";
-        string text = $"{label}  {value}";
-        SizeF textSize = graphics.MeasureString(text, _markerFont);
-        float labelX = point.X + 20;
-        if (labelX + textSize.Width + 18 > ClientSize.Width)
-            labelX = point.X - textSize.Width - 30;
-        float labelY = labelAbove ? point.Y - textSize.Height - 25 : point.Y + 18;
-        labelY = Math.Clamp(labelY, 8, ClientSize.Height - textSize.Height - 18);
-        RectangleF background = new(labelX - 7, labelY - 4, textSize.Width + 14, textSize.Height + 8);
-        using GraphicsPath backgroundPath = CreateRoundedRectangle(Rectangle.Round(background), 7);
-        using SolidBrush backgroundBrush = new(Color.FromArgb(24, 27, 34));
-        using Pen outline = new(color, 1.5f);
-        using SolidBrush textBrush = new(Color.White);
-        graphics.FillPath(backgroundBrush, backgroundPath);
-        graphics.DrawPath(outline, backgroundPath);
-        graphics.DrawString(text, _markerFont, textBrush, labelX, labelY);
+        using Pen haloPen = new(Color.FromArgb(230, 0, 0, 0), haloWidth) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using Pen linePen = new(color, lineWidth) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+
+        graphics.DrawLine(haloPen, point.X - arm, point.Y, point.X + arm, point.Y);
+        graphics.DrawLine(haloPen, point.X, point.Y - arm, point.X, point.Y + arm);
+        graphics.DrawLine(linePen, point.X - arm, point.Y, point.X + arm, point.Y);
+        graphics.DrawLine(linePen, point.X, point.Y - arm, point.X, point.Y + arm);
+
+        string valueText = nits < 1 ? $"{nits:F3}" : $"{nits:F1}";
+        string text = $"{prefix} {valueText}";
+        using StringFormat typographic = CreateTypographicFormat();
+        SizeF designSize = graphics.MeasureString(text, _markerFont, 260, typographic);
+        float scaledW = designSize.Width * _dpiScale;
+        float scaledH = _markerFont.Height * _dpiScale;
+
+        float textX = point.X + arm + 7f * _dpiScale;
+        if (textX + scaledW + 8f > ClientSize.Width)
+            textX = point.X - arm - scaledW - 7f * _dpiScale;
+        textX = Math.Clamp(textX, 6f, Math.Max(6f, ClientSize.Width - scaledW - 6f));
+
+        float textY = labelAbove ? point.Y - scaledH - 4f * _dpiScale : point.Y + 4f * _dpiScale;
+        textY = Math.Clamp(textY, 6f, Math.Max(6f, ClientSize.Height - scaledH - 6f));
+
+        GraphicsState state = graphics.Save();
+        graphics.TranslateTransform(textX, textY);
+        graphics.ScaleTransform(_dpiScale, _dpiScale);
+
+        // Crisp 8-direction outline shadow for effortless readability on bright HDR and black scenes.
+        using SolidBrush shadowBrush = new(Color.FromArgb(235, 0, 0, 0));
+        using SolidBrush textBrush = new(color);
+        const float o = 1.6f;
+        graphics.DrawString(text, _markerFont, shadowBrush, -o, 0f, typographic);
+        graphics.DrawString(text, _markerFont, shadowBrush, o, 0f, typographic);
+        graphics.DrawString(text, _markerFont, shadowBrush, 0f, -o, typographic);
+        graphics.DrawString(text, _markerFont, shadowBrush, 0f, o, typographic);
+        graphics.DrawString(text, _markerFont, shadowBrush, -o, -o, typographic);
+        graphics.DrawString(text, _markerFont, shadowBrush, o, -o, typographic);
+        graphics.DrawString(text, _markerFont, shadowBrush, -o, o, typographic);
+        graphics.DrawString(text, _markerFont, shadowBrush, o, o, typographic);
+        graphics.DrawString(text, _markerFont, textBrush, 0f, 0f, typographic);
+
+        graphics.Restore(state);
     }
 
     private PointF MapSourcePosition(uint sourceX, uint sourceY)
@@ -398,75 +340,29 @@ internal sealed class AnalysisOverlayForm : Form
         return new PointF(left + outputU * width, top + outputV * height);
     }
 
-    private static Bitmap CreateHeatmap(GamutTelemetry telemetry)
+    private static Font CreatePixelFont(float size, FontStyle style) =>
+        new("Segoe UI", size, style, GraphicsUnit.Pixel);
+
+    private static StringFormat CreateTypographicFormat() => new(StringFormat.GenericTypographic)
     {
-        Bitmap bitmap = new(telemetry.HistogramWidth, telemetry.HistogramHeight, PixelFormat.Format32bppArgb);
-        uint maximum = telemetry.Histogram.Length == 0 ? 0 : telemetry.Histogram.Max();
-        if (maximum == 0)
-            return bitmap;
+        Alignment = StringAlignment.Near,
+        LineAlignment = StringAlignment.Near,
+        FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.MeasureTrailingSpaces
+    };
 
-        double maximumLog = Math.Log(1.0 + maximum);
-        for (int y = 0; y < telemetry.HistogramHeight; y++)
-        {
-            for (int x = 0; x < telemetry.HistogramWidth; x++)
-            {
-                uint count = telemetry.Histogram[y * telemetry.HistogramWidth + x];
-                if (count == 0)
-                    continue;
-
-                double intensity = Math.Log(1.0 + count) / maximumLog;
-                float u = (x + 0.5f) / telemetry.HistogramWidth * DiagramMaximum;
-                float v = (y + 0.5f) / telemetry.HistogramHeight * DiagramMaximum;
-                Color chromaticity = UvToSrgb(u, v);
-                int alpha = (int)Math.Clamp(45 + 210 * Math.Sqrt(intensity), 0, 255);
-                int red = (int)Math.Clamp(chromaticity.R * (0.35 + 0.65 * intensity), 0, 255);
-                int green = (int)Math.Clamp(chromaticity.G * (0.35 + 0.65 * intensity), 0, 255);
-                int blue = (int)Math.Clamp(chromaticity.B * (0.35 + 0.65 * intensity), 0, 255);
-                bitmap.SetPixel(x, telemetry.HistogramHeight - 1 - y, Color.FromArgb(alpha, red, green, blue));
-            }
-        }
-        return bitmap;
-    }
-
-    private static Color UvToSrgb(float u, float v)
+    private static GraphicsPath CreateRoundedRectangle(RectangleF bounds, float radius)
     {
-        if (v <= 1e-5f)
-            return Color.White;
-        double x = 9.0 * u / (4.0 * v);
-        double y = 1.0;
-        double z = (12.0 - 3.0 * u - 20.0 * v) / (4.0 * v);
-        double red = 3.24096994 * x - 1.53738318 * y - 0.49861076 * z;
-        double green = -0.96924364 * x + 1.87596750 * y + 0.04155506 * z;
-        double blue = 0.05563008 * x - 0.20397696 * y + 1.05697151 * z;
-        return Color.FromArgb(
-            ToSrgbByte(red),
-            ToSrgbByte(green),
-            ToSrgbByte(blue));
-    }
-
-    private static int ToSrgbByte(double linear)
-    {
-        linear = Math.Clamp(linear, 0, 1);
-        double encoded = linear <= 0.0031308
-            ? linear * 12.92
-            : 1.055 * Math.Pow(linear, 1.0 / 2.4) - 0.055;
-        return (int)Math.Round(encoded * 255);
-    }
-
-    private static PointF XyToUv(float x, float y)
-    {
-        float denominator = -2f * x + 12f * y + 3f;
-        return new PointF(4f * x / denominator, 9f * y / denominator);
-    }
-
-    private static GraphicsPath CreateRoundedRectangle(Rectangle rectangle, int radius)
-    {
-        int diameter = radius * 2;
+        float diameter = Math.Min(radius * 2f, Math.Min(bounds.Width, bounds.Height));
         GraphicsPath path = new();
-        path.AddArc(rectangle.Left, rectangle.Top, diameter, diameter, 180, 90);
-        path.AddArc(rectangle.Right - diameter, rectangle.Top, diameter, diameter, 270, 90);
-        path.AddArc(rectangle.Right - diameter, rectangle.Bottom - diameter, diameter, diameter, 0, 90);
-        path.AddArc(rectangle.Left, rectangle.Bottom - diameter, diameter, diameter, 90, 90);
+        if (diameter <= 0.1f)
+        {
+            path.AddRectangle(bounds);
+            return path;
+        }
+        path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
+        path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
+        path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
+        path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
         path.CloseFigure();
         return path;
     }
@@ -475,10 +371,6 @@ internal sealed class AnalysisOverlayForm : Form
     {
         if (disposing)
         {
-            _heatmap?.Dispose();
-            _titleFont.Dispose();
-            _bodyFont.Dispose();
-            _smallFont.Dispose();
             _markerFont.Dispose();
             _toastFont.Dispose();
             _screenshotToastTimer.Dispose();

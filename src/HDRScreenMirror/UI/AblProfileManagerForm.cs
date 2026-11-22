@@ -1,19 +1,20 @@
 using System.Globalization;
 using System.Drawing.Drawing2D;
+using HDRScreenMirror.Interop;
 
 namespace HDRScreenMirror.UI;
 
 internal sealed class AblProfileManagerForm : Form
 {
-    private static readonly Color WindowBackground = Color.FromArgb(246, 247, 250);
-    private static readonly Color SurfaceBackground = Color.White;
-    private static readonly Color PrimaryText = Color.FromArgb(31, 36, 46);
-    private static readonly Color SecondaryText = Color.FromArgb(92, 101, 116);
-    private static readonly Color Accent = Color.FromArgb(45, 112, 225);
-    private static readonly Color AccentHover = Color.FromArgb(36, 96, 199);
-    private static readonly Color SubtleSurface = Color.FromArgb(248, 249, 252);
-    private static readonly Color BorderColor = Color.FromArgb(222, 226, 234);
-    private static readonly Color Danger = Color.FromArgb(190, 53, 63);
+    private static Color WindowBackground => HextaTheme.Canvas;
+    private static Color SurfaceBackground => HextaTheme.Surface;
+    private static Color PrimaryText => HextaTheme.TextPrimary;
+    private static Color SecondaryText => HextaTheme.TextSecondary;
+    private static Color Accent => HextaTheme.Primary;
+    private static Color AccentHover => HextaTheme.PrimaryHover;
+    private static Color SubtleSurface => HextaTheme.MutedSurface;
+    private static Color BorderColor => HextaTheme.Border;
+    private static Color Danger => HextaTheme.Danger;
 
     private readonly List<AblProfile> _profiles;
     private readonly Icon _windowIcon;
@@ -33,6 +34,8 @@ internal sealed class AblProfileManagerForm : Form
     {
         Dock = DockStyle.Fill,
         Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Regular),
+        BackColor = HextaTheme.Surface,
+        ForeColor = HextaTheme.TextPrimary,
         Margin = new Padding(0, 6, 0, 6)
     };
     private readonly DataGridView _measurements = new()
@@ -42,7 +45,8 @@ internal sealed class AblProfileManagerForm : Form
         AllowUserToDeleteRows = false,
         AllowUserToResizeRows = false,
         AutoGenerateColumns = false,
-        BackgroundColor = Color.White,
+        BackgroundColor = HextaTheme.Surface,
+        GridColor = HextaTheme.Border,
         BorderStyle = BorderStyle.FixedSingle,
         CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
         ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None,
@@ -137,6 +141,12 @@ internal sealed class AblProfileManagerForm : Form
         _profiles.Select(profile => profile.Clone()).ToArray();
 
     public string ActiveProfileId { get; private set; }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        NativeMethods.ApplyImmersiveDarkMode(Handle, HextaTheme.IsDark);
+    }
 
     protected override void OnShown(EventArgs eventArgs)
     {
@@ -451,24 +461,24 @@ internal sealed class AblProfileManagerForm : Form
     {
         _measurements.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
         {
-            BackColor = Color.FromArgb(239, 242, 247),
+            BackColor = HextaTheme.MutedSurface,
             ForeColor = PrimaryText,
             Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold),
             Alignment = DataGridViewContentAlignment.MiddleCenter,
-            SelectionBackColor = Color.FromArgb(239, 242, 247),
+            SelectionBackColor = HextaTheme.MutedSurface,
             SelectionForeColor = PrimaryText
         };
         _measurements.DefaultCellStyle = new DataGridViewCellStyle
         {
-            BackColor = Color.White,
+            BackColor = HextaTheme.Surface,
             ForeColor = PrimaryText,
-            SelectionBackColor = Color.FromArgb(223, 234, 252),
+            SelectionBackColor = HextaTheme.HoverSurface,
             SelectionForeColor = PrimaryText,
             Font = new Font("Segoe UI", 10f, FontStyle.Regular),
             Padding = new Padding(8, 0, 8, 0),
             NullValue = string.Empty
         };
-        _measurements.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(249, 250, 252);
+        _measurements.AlternatingRowsDefaultCellStyle.BackColor = HextaTheme.Canvas;
         _measurements.ColumnHeadersHeight = 40;
         _measurements.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
         _measurements.RowTemplate.Height = 36;
@@ -508,8 +518,8 @@ internal sealed class AblProfileManagerForm : Form
                 null);
             if (aplPercent is 1 or 100)
             {
-                _measurements.Rows[rowIndex].DefaultCellStyle.BackColor = Color.FromArgb(240, 246, 255);
-                _measurements.Rows[rowIndex].DefaultCellStyle.SelectionBackColor = Color.FromArgb(211, 228, 253);
+                _measurements.Rows[rowIndex].DefaultCellStyle.BackColor = HextaTheme.MutedSurface;
+                _measurements.Rows[rowIndex].DefaultCellStyle.SelectionBackColor = HextaTheme.HoverSurface;
             }
             _measurements.Rows[rowIndex].Tag = aplPercent;
         }
@@ -521,16 +531,9 @@ internal sealed class AblProfileManagerForm : Form
             return;
 
         bool selected = (eventArgs.State & DrawItemState.Selected) != 0;
-        Color background = selected ? Color.FromArgb(229, 238, 253) : SubtleSurface;
+        Color background = selected ? HextaTheme.HoverSurface : SubtleSurface;
         using SolidBrush backgroundBrush = new(background);
         eventArgs.Graphics.FillRectangle(backgroundBrush, eventArgs.Bounds);
-        if (selected)
-        {
-            using SolidBrush accentBrush = new(Accent);
-            eventArgs.Graphics.FillRectangle(
-                accentBrush,
-                new Rectangle(eventArgs.Bounds.Left, eventArgs.Bounds.Top + 5, 4, eventArgs.Bounds.Height - 10));
-        }
 
         Rectangle textBounds = new(
             eventArgs.Bounds.Left + 14,
@@ -687,9 +690,9 @@ internal sealed class AblProfileManagerForm : Form
     {
         if (!button.Enabled)
         {
-            button.BackColor = Color.FromArgb(241, 243, 247);
-            button.ForeColor = Color.FromArgb(155, 162, 174);
-            button.FlatAppearance.BorderColor = Color.FromArgb(225, 229, 236);
+            button.BackColor = HextaTheme.MutedSurface;
+            button.ForeColor = HextaTheme.TextDisabled;
+            button.FlatAppearance.BorderColor = HextaTheme.Border;
             button.FlatAppearance.MouseOverBackColor = button.BackColor;
             button.FlatAppearance.MouseDownBackColor = button.BackColor;
             button.Cursor = Cursors.Default;
@@ -698,17 +701,17 @@ internal sealed class AblProfileManagerForm : Form
 
         bool primary = tone == ButtonTone.Primary;
         bool danger = tone == ButtonTone.Danger;
-        button.BackColor = primary ? Accent : Color.White;
-        button.ForeColor = primary ? Color.White : danger ? Danger : PrimaryText;
+        button.BackColor = primary ? Accent : HextaTheme.Surface;
+        button.ForeColor = primary ? HextaTheme.PrimaryForeground : danger ? Danger : PrimaryText;
         button.FlatAppearance.BorderColor = primary
             ? Accent
-            : danger ? Color.FromArgb(228, 181, 185) : BorderColor;
+            : danger ? HextaTheme.DangerBorder : BorderColor;
         button.FlatAppearance.MouseOverBackColor = primary
             ? AccentHover
-            : danger ? Color.FromArgb(254, 244, 245) : Color.FromArgb(244, 246, 250);
+            : danger ? HextaTheme.DangerHover : HextaTheme.MutedSurface;
         button.FlatAppearance.MouseDownBackColor = primary
-            ? Color.FromArgb(31, 83, 173)
-            : danger ? Color.FromArgb(250, 232, 234) : Color.FromArgb(234, 238, 245);
+            ? HextaTheme.PrimaryPressed
+            : danger ? HextaTheme.DangerPressed : HextaTheme.HoverSurface;
         button.Cursor = Cursors.Hand;
     }
 
@@ -1002,23 +1005,23 @@ internal sealed class AblProfileManagerForm : Form
         protected override void OnSizeChanged(EventArgs eventArgs)
         {
             base.OnSizeChanged(eventArgs);
-            if (Width <= 0 || Height <= 0)
-                return;
-
-            using GraphicsPath path = CreateRoundedRectangle(ClientRectangle, CornerRadius);
-            Region? oldRegion = Region;
-            Region = new Region(path);
-            oldRegion?.Dispose();
+            Invalidate();
         }
 
         protected override void OnPaint(PaintEventArgs eventArgs)
         {
             base.OnPaint(eventArgs);
-            eventArgs.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            Rectangle borderBounds = new(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
-            using GraphicsPath path = CreateRoundedRectangle(borderBounds, CornerRadius);
-            using Pen borderPen = new(BorderColor, 1);
-            eventArgs.Graphics.DrawPath(borderPen, path);
+            Graphics graphics = eventArgs.Graphics;
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            using SolidBrush outer = new(Parent?.BackColor ?? HextaTheme.Canvas);
+            graphics.FillRectangle(outer, ClientRectangle);
+            RectangleF borderBounds = new(0.25f, 0.25f, Math.Max(0, Width - 0.5f), Math.Max(0, Height - 0.5f));
+            using GraphicsPath path = HextaTheme.CreateRoundedPath(borderBounds, CornerRadius);
+            using SolidBrush fill = new(BackColor);
+            using Pen borderPen = new(BorderColor, HextaTheme.HairlineWidth);
+            graphics.FillPath(fill, path);
+            graphics.DrawPath(borderPen, path);
         }
 
         private static GraphicsPath CreateRoundedRectangle(Rectangle bounds, int radius)

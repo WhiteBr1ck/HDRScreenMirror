@@ -162,16 +162,17 @@ Profiles can be created, duplicated, renamed, deleted, and saved. The active pro
 | Hotkey | Action |
 | --- | --- |
 | `Ctrl + F8` | Start or stop the selected mirror or analysis mode |
-| `Ctrl + F9` | Toggle luminance false color in multi display mirroring |
+| `Ctrl + F9` | Cycle false color mode (Off / Luminance / Gamut) in multi display mirroring |
 | `Ctrl + F10` | Capture the mirror image on every output display in multi display mirroring |
+| `Ctrl + Shift + F10` | Freeze the current output frame for interactive region capture in multi display mirroring |
 | `Ctrl + F11` | Show or hide the status panel |
 | `Ctrl + F12` | Recall the control panel to the capture display |
 
 ## Output screenshots
 
-After multi display mirroring starts, press `Ctrl + F10` to capture the fully rendered mirror image for every output display. A brief confirmation appears on the output display after the files are saved. The PNG includes the actual scaling and black bars, rendered output cursor, false color view, visible status panel, real time gamut analysis panel, and luminance markers. Multiple output displays are saved as separate images. Output image capture is unavailable in single display analysis.
+After multi display mirroring starts, press `Ctrl + F10` (full output) or `Ctrl + Shift + F10` (region capture) to capture the fully rendered mirror image. A brief confirmation appears on the output display after saving or copying. Captures include the actual scaling and black bars, rendered output cursor, false color view, visible status panel, real time gamut analysis panel, and luminance markers. Output image capture is unavailable in single display analysis.
 
-“Save automatically” writes images directly to the configured folder. The default is a `Screenshots` folder beside `HDRScreenMirror.exe`. “Choose a location each time” opens a save dialog after the hotkey is pressed.
+Capture modes support “Auto save”, “Ask path”, and “Clipboard”, with an option to also copy saved screenshots to the clipboard. Region capture lets you drag and reposition a selection, then copy (`Enter` / double click) or save as PNG (`S`).
 
 The output windows are normally excluded from Windows screen capture, so a system screenshot tool may not see them. The built in capture does not use a system screenshot or recapture the output desktop. It reads the application's own FP16 mirror output, tone maps HDR to SDR, and saves a standard PNG. Analysis panels and luminance markers are composited after conversion. The PNG is suitable for viewing and recording analysis results, but it does not contain the original FP16 HDR data.
 
@@ -211,6 +212,17 @@ Analysis overlays automatically recover their window level over applications tha
 4. HDR single display analysis overlays cannot cover exclusive fullscreen applications or applications that use an independent presentation path.
 
 ## Changelog
+
+### 2.0.0
+
+This is a major release.
+
+1. Redesigned the main control window, About dialog, Shortcuts dialog, and ABL profile manager with live System, Light, and Dark theme switching and PerMonitorV2 DPI scaling fixes.
+2. Redesigned the status overlay and split the CIE 1976 gamut panel into an independent window, adding Windows 11 acrylic frosted glass, opacity, surface and accent color customization, 50%–150% scaling, and 1–20 Hz refresh rate control.
+3. Added gamut false color mode (monochrome grayscale inside sRGB, color highlights for DCI-P3, BT.2020, and out-of-BT.2020), mutually exclusive with luminance false color and cycled via `Ctrl + F9`.
+4. Upgraded screenshots with clipboard support (clipboard-only or copy alongside PNG save) and interactive region capture (`Ctrl + Shift + F10`).
+5. Simplified maximum/minimum luminance markers to a solid crosshair and numeric readout with tie-breaking stabilization on uniform regions.
+6. Fixed DXGI cursor hotspot double-offset and frame-latency waitable handle leaks, optimized ABL shader evaluation, and added automatic `.bak` backup protection when saving settings.
 
 ### 1.7.1
 

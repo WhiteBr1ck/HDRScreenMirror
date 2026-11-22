@@ -58,11 +58,9 @@ uint ClassifyGamut(float3 linearRgb, uint inputMode)
 
 float3 MapGamutCategoryToFalseColor(uint category)
 {
-    if (category == 0)
-        return float3(0.278, 0.839, 1.0);
     if (category == 1)
-        return float3(1.0, 0.835, 0.31);
+        return float3(1.0, 0.780, 0.220);
     if (category == 2)
-        return float3(0.898, 0.412, 1.0);
-    return float3(1.0, 0.255, 0.20);
+        return float3(0.878, 0.361, 1.0);
+    return float3(1.0, 0.259, 0.239);
 }

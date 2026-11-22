@@ -1,14 +1,19 @@
+using System.Diagnostics;
 using System.Reflection;
+using HDRScreenMirror.Interop;
 
 namespace HDRScreenMirror.UI;
 
 internal sealed class AboutForm : Form
 {
+    private const string RepositoryUrl = "https://github.com/WhiteBr1ck/HDRScreenMirror";
+
     private readonly Icon _windowIcon;
     private readonly Image _logoImage;
 
     public AboutForm()
     {
+        SuspendLayout();
         string version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.7.1";
 
         _windowIcon = BrandAssets.LoadApplicationIcon();
@@ -21,73 +26,143 @@ internal sealed class AboutForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(500, 390);
-        BackColor = Color.White;
-        AutoScaleMode = AutoScaleMode.Dpi;
-        Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular);
+        ClientSize = new Size(460, 344);
+        BackColor = HextaTheme.Surface;
+        Font = HextaTheme.CreateSmallFont();
 
-        Label title = new()
-        {
-            Text = "HDRScreenMirror",
-            Font = new Font("Segoe UI Semibold", 20f, FontStyle.Regular),
-            ForeColor = Color.FromArgb(28, 31, 38),
-            AutoSize = true,
-            Location = new Point(104, 28)
-        };
         PictureBox logo = new()
         {
             Image = _logoImage,
             SizeMode = PictureBoxSizeMode.Zoom,
-            Location = new Point(30, 22),
-            Size = new Size(62, 62),
+            Location = new Point(28, 26),
+            Size = new Size(48, 48),
             TabStop = false
+        };
+        Label title = new()
+        {
+            Text = "HDRScreenMirror",
+            Font = HextaTheme.CreateTitleFont(FontStyle.Bold),
+            ForeColor = HextaTheme.TextPrimary,
+            AutoSize = true,
+            Location = new Point(88, 24)
         };
         Label subtitle = new()
         {
             Text = Localization.T("AboutSubtitle"),
-            Font = new Font("Microsoft YaHei UI", 10.5f, FontStyle.Regular),
-            ForeColor = Color.FromArgb(93, 101, 116),
+            Font = HextaTheme.CreateSmallFont(),
+            ForeColor = HextaTheme.TextMuted,
             AutoSize = true,
-            Location = new Point(106, 70),
-            Padding = new Padding(0, 4, 0, 4),
-            UseCompatibleTextRendering = true
+            Location = new Point(89, 54)
         };
+
+        HextaSeparator topDivider = new()
+        {
+            Dock = DockStyle.None,
+            Location = new Point(28, 96),
+            Size = new Size(404, 1)
+        };
+
         Label versionLabel = new()
         {
             Text = Localization.F("AboutVersion", version),
-            Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Regular),
-            ForeColor = Color.FromArgb(46, 51, 61),
+            Font = HextaTheme.CreateBodyFont(FontStyle.Bold),
+            ForeColor = HextaTheme.TextPrimary,
             AutoSize = false,
-            Location = new Point(35, 116),
-            Size = new Size(430, 32),
+            Location = new Point(28, 112),
+            Size = new Size(404, 28),
             TextAlign = ContentAlignment.MiddleLeft
         };
         Label details = new()
         {
             Text = Localization.T("AboutDetails"),
-            Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Regular),
-            ForeColor = Color.FromArgb(70, 76, 88),
+            Font = HextaTheme.CreateSmallFont(),
+            ForeColor = HextaTheme.TextSecondary,
             AutoSize = false,
-            Location = new Point(35, 160),
-            Size = new Size(430, 110)
+            Location = new Point(28, 146),
+            Size = new Size(404, 78)
         };
-        Button closeButton = new()
+
+        LinkLabel githubLink = new()
+        {
+            Text = "GitHub  WhiteBr1ck/HDRScreenMirror",
+            Font = HextaTheme.CreateSmallFont(),
+            LinkColor = HextaTheme.TextPrimary,
+            ActiveLinkColor = HextaTheme.TextSecondary,
+            VisitedLinkColor = HextaTheme.TextPrimary,
+            LinkBehavior = LinkBehavior.HoverUnderline,
+            AutoSize = true,
+            Location = new Point(28, 234)
+        };
+        githubLink.LinkClicked += (_, _) => OpenRepository();
+
+        HextaSeparator bottomDivider = new()
+        {
+            Dock = DockStyle.None,
+            Location = new Point(28, 274),
+            Size = new Size(404, 1)
+        };
+
+        HextaButton githubButton = new()
+        {
+            Text = "GitHub",
+            Variant = HextaButtonVariant.Secondary,
+            Size = new Size(88, 36),
+            Location = new Point(28, 290)
+        };
+        githubButton.Click += (_, _) => OpenRepository();
+
+        HextaButton closeButton = new()
         {
             Text = Localization.T("Close"),
+            Variant = HextaButtonVariant.Primary,
             DialogResult = DialogResult.OK,
-            MinimumSize = new Size(96, 42),
-            Size = new Size(96, 42),
-            Location = new Point(369, 332)
+            Size = new Size(88, 36),
+            Location = new Point(344, 290)
         };
 
         Controls.Add(logo);
         Controls.Add(title);
         Controls.Add(subtitle);
+        Controls.Add(topDivider);
         Controls.Add(versionLabel);
         Controls.Add(details);
+        Controls.Add(githubLink);
+        Controls.Add(bottomDivider);
+        Controls.Add(githubButton);
         Controls.Add(closeButton);
-        AcceptButton = closeButton;
-        CancelButton = closeButton;
+
+        AutoScaleDimensions = new SizeF(HextaTheme.BaselineDpi, HextaTheme.BaselineDpi);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        ResumeLayout(false);
+        PerformLayout();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        NativeMethods.ApplyImmersiveDarkMode(Handle, HextaTheme.IsDark);
+    }
+
+    private static void OpenRepository()
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(RepositoryUrl) { UseShellExecute = true });
+        }
+        catch
+        {
+        }
+    }
+
+    protected override bool ProcessDialogKey(Keys keyData)
+    {
+        if (keyData == Keys.Escape || keyData == Keys.Enter)
+        {
+            DialogResult = DialogResult.OK;
+            Close();
+            return true;
+        }
+        return base.ProcessDialogKey(keyData);
     }
 
     protected override void Dispose(bool disposing)
