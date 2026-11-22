@@ -65,6 +65,11 @@ internal sealed class AblProfileManagerForm : Form
         Font = new Font("Segoe UI", 8.5f, FontStyle.Regular)
     };
     private readonly Panel _eotfPanel = new() { Dock = DockStyle.Fill };
+    private readonly HextaSegmentedControl _eotfAplSegmented = new() { Dock = DockStyle.Fill };
+    private readonly HextaSwitch _customAplEotf = new() { Dock = DockStyle.Fill };
+    private AblProfile? _nodeEditor;
+    private int SelectedEotfApl => _eotfAplSegmented.SelectedIndex <= 0 ? 0 :
+        AblProfile.SupportedEotfAplPercentages[_eotfAplSegmented.SelectedIndex - 1];
     private readonly Button _newButton;
     private readonly Button _duplicateButton;
     private readonly Button _deleteButton;
@@ -80,21 +85,23 @@ internal sealed class AblProfileManagerForm : Form
     public AblProfileManagerForm(IEnumerable<AblProfile> profiles, string activeProfileId)
     {
         _profiles = profiles.Select(profile => profile.Clone()).ToList();
+        foreach (AblProfile profile in _profiles)
+            profile.Normalize();
         ActiveProfileId = activeProfileId;
         _windowIcon = BrandAssets.LoadApplicationIcon();
 
         Text = Localization.T("AblProfilesTitle");
         Icon = _windowIcon;
         StartPosition = FormStartPosition.CenterParent;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false;
+        FormBorderStyle = FormBorderStyle.Sizable;
+        MaximizeBox = true;
         MinimizeBox = false;
         ShowInTaskbar = false;
         AutoScaleMode = AutoScaleMode.Dpi;
         BackColor = WindowBackground;
         Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular);
-        ClientSize = new Size(1500, 780);
-        MinimumSize = new Size(1320, 740);
+        ClientSize = new Size(1460, 820);
+        MinimumSize = new Size(1160, 720);
 
         _newButton = CreateButton("AblNew", 96, ButtonTone.Primary);
         _duplicateButton = CreateButton("AblDuplicate", 96, ButtonTone.Neutral);
@@ -105,6 +112,22 @@ internal sealed class AblProfileManagerForm : Form
         _cancelButton.DialogResult = DialogResult.Cancel;
 
         ConfigureMeasurementGrid();
+        _eotfAplSegmented.SetItems(
+            new[] { Localization.T("AblEotfPeakTab") }
+                .Concat(AblProfile.SupportedEotfAplPercentages.Select(apl => $"APL {apl}%")),
+            0);
+        _customAplEotf.Text = Localization.T("AblEotfOverride");
+        _eotfAplSegmented.SelectedIndexChanged += (_, _) => LoadEotfForSelectedProfile();
+        _customAplEotf.CheckedChanged += (_, _) =>
+        {
+            if (_loading || SelectedEotfApl == 0 || GetSelectedProfile() is not AblProfile profile)
+                return;
+            if (_customAplEotf.Checked)
+                profile.SetAplEotfCurve(SelectedEotfApl, profile.GetAplEotfEditorProfile(SelectedEotfApl));
+            else
+                profile.AplEotfCurves.RemoveAll(curve => curve.AplPercent == SelectedEotfApl);
+            LoadEotfForSelectedProfile();
+        };
         Controls.Add(BuildLayout());
 
         _profileList.SelectedIndexChanged += (_, _) => ChangeSelectedProfile();
@@ -204,8 +227,8 @@ internal sealed class AblProfileManagerForm : Form
             ColumnCount = 3,
             RowCount = 1
         };
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 276));
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 600));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 256));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 380));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         content.Controls.Add(BuildProfilePanel(), 0, 0);
         content.Controls.Add(BuildMeasurementPanel(), 1, 0);
@@ -344,13 +367,22 @@ internal sealed class AblProfileManagerForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 3,
+            RowCount = 2,
             Margin = Padding.Empty
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
-        layout.Controls.Add(new Label
+
+        TableLayoutPanel heading = new()
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = Padding.Empty
+        };
+        heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        heading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 154));
+        heading.Controls.Add(new Label
         {
             Text = Localization.T("AblEotfTitle"),
             Dock = DockStyle.Fill,
@@ -358,19 +390,27 @@ internal sealed class AblProfileManagerForm : Form
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = PrimaryText
         }, 0, 0);
-        layout.Controls.Add(_eotfEditor, 0, 1);
+        _resetEotfButton.Dock = DockStyle.Fill;
+        _resetEotfButton.Margin = new Padding(0, 0, 0, 6);
+        heading.Controls.Add(_resetEotfButton, 1, 0);
+        layout.Controls.Add(heading, 0, 0);
 
-        FlowLayoutPanel actions = new()
+        TableLayoutPanel curveLayout = new()
         {
             Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.RightToLeft,
-            WrapContents = false,
-            Padding = new Padding(0, 7, 0, 0),
+            ColumnCount = 1,
+            RowCount = 3,
             Margin = Padding.Empty
         };
-        _resetEotfButton.Margin = new Padding(0);
-        actions.Controls.Add(_resetEotfButton);
-        layout.Controls.Add(actions, 0, 2);
+        curveLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        curveLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        curveLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _eotfAplSegmented.Margin = new Padding(0, 2, 0, 6);
+        _customAplEotf.Margin = new Padding(0, 0, 0, 4);
+        curveLayout.Controls.Add(_eotfAplSegmented, 0, 0);
+        curveLayout.Controls.Add(_customAplEotf, 0, 1);
+        curveLayout.Controls.Add(_eotfEditor, 0, 2);
+        layout.Controls.Add(curveLayout, 0, 1);
 
         _eotfPanel.Controls.Add(layout);
         card.Controls.Add(_eotfPanel);
@@ -488,7 +528,7 @@ internal sealed class AblProfileManagerForm : Form
             Name = "AplPercent",
             HeaderText = Localization.T("AblAplColumn"),
             ReadOnly = true,
-            Width = 180,
+            Width = 150,
             SortMode = DataGridViewColumnSortMode.NotSortable,
             DefaultCellStyle = new DataGridViewCellStyle
             {
@@ -765,19 +805,29 @@ internal sealed class AblProfileManagerForm : Form
     private void LoadEotfForSelectedProfile()
     {
         AblProfile? profile = GetSelectedProfile();
-        double referencePeakNits = profile?.ReferencePeakNits ?? 0;
-        IReadOnlyList<double> values = profile?.GetEotfEditorValues() ?? [];
+        bool loading = _loading;
+        _loading = true;
+        _customAplEotf.Visible = SelectedEotfApl != 0;
+        _customAplEotf.Enabled = profile?.IsValid == true;
+        _customAplEotf.Checked = profile?.AplEotfCurves.Any(curve => curve.AplPercent == SelectedEotfApl) == true;
+        _nodeEditor = SelectedEotfApl == 0 ? null : profile?.GetAplEotfEditorProfile(SelectedEotfApl);
+        AblProfile? activeEditor = _nodeEditor ?? profile;
+        double referencePeakNits = activeEditor?.ReferencePeakNits ?? 0;
+        IReadOnlyList<double> values = activeEditor?.GetEotfEditorValues() ?? [];
         _eotfEditor.LoadCurve(
             referencePeakNits,
             values,
-            profile?.UsesStandardPq ?? true,
-            profile?.EffectiveEotfClipPqPercent ??
+            activeEditor?.UsesStandardPq ?? true,
+            activeEditor?.EffectiveEotfClipPqPercent ??
                 AblProfile.GetStandardClipPqPercent(referencePeakNits),
-            profile?.HasCustomEotfCurve ?? false);
-        _eotfEditor.Enabled = profile is not null && referencePeakNits > 0;
-        _resetEotfButton.Enabled = profile is not null &&
+            activeEditor?.HasCustomEotfCurve ?? false);
+        _eotfEditor.Enabled = activeEditor is not null && referencePeakNits > 0 &&
+            (SelectedEotfApl == 0 || _customAplEotf.Checked);
+        _resetEotfButton.Enabled = activeEditor is not null &&
             referencePeakNits > 0 &&
-            !profile.UsesStandardPq;
+            !activeEditor.UsesStandardPq &&
+            _eotfEditor.Enabled;
+        _loading = loading;
     }
 
     private void StoreEotfCurve(IReadOnlyList<double> values)
@@ -785,8 +835,11 @@ internal sealed class AblProfileManagerForm : Form
         if (_loading || GetSelectedProfile() is not AblProfile profile)
             return;
 
-        profile.SetCustomEotf(values);
-        _resetEotfButton.Enabled = !profile.UsesStandardPq;
+        AblProfile editor = _nodeEditor ?? profile;
+        editor.SetCustomEotf(values);
+        if (SelectedEotfApl != 0)
+            profile.SetAplEotfCurve(SelectedEotfApl, editor);
+        _resetEotfButton.Enabled = !editor.UsesStandardPq;
     }
 
     private void StoreEotfClipPoint(double pqPercent)
@@ -794,8 +847,11 @@ internal sealed class AblProfileManagerForm : Form
         if (_loading || GetSelectedProfile() is not AblProfile profile)
             return;
 
-        profile.SetEotfClipPqPercent(pqPercent);
-        _resetEotfButton.Enabled = !profile.UsesStandardPq;
+        AblProfile editor = _nodeEditor ?? profile;
+        editor.SetEotfClipPqPercent(pqPercent);
+        if (SelectedEotfApl != 0)
+            profile.SetAplEotfCurve(SelectedEotfApl, editor);
+        _resetEotfButton.Enabled = !editor.UsesStandardPq;
     }
 
     private void RestoreStandardPq()
@@ -803,7 +859,10 @@ internal sealed class AblProfileManagerForm : Form
         if (GetSelectedProfile() is not AblProfile profile)
             return;
 
-        profile.RestoreStandardPq();
+        AblProfile editor = _nodeEditor ?? profile;
+        editor.RestoreStandardPq();
+        if (SelectedEotfApl != 0)
+            profile.SetAplEotfCurve(SelectedEotfApl, editor);
         _eotfEditor.RestoreStandardPq();
         _resetEotfButton.Enabled = false;
     }

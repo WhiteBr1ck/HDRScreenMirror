@@ -1,5 +1,6 @@
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
+using HDRScreenMirror.Interop;
 
 namespace HDRScreenMirror.UI;
 
@@ -22,6 +23,8 @@ internal sealed class EotfCurveEditor : Control
     private bool _hasCustomCurve;
     private bool _usesStandardPq = true;
     private double _clipPq = 1;
+    private readonly HextaSegmentedControl _units = new();
+    private bool IsNormalized => _units.SelectedIndex == 1;
 
     public EotfCurveEditor()
     {
@@ -35,6 +38,26 @@ internal sealed class EotfCurveEditor : Control
         BackColor = SurfaceColor;
         MinimumSize = new Size(420, 360);
         TabStop = true;
+        _units.SetItems(
+            [Localization.T("EotfAbsoluteUnits"), Localization.T("EotfNormalizedUnits")],
+            0);
+        _units.SelectedIndexChanged += (_, _) => Invalidate();
+        Controls.Add(_units);
+        LayoutUnitControls();
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (_units is not null)
+            LayoutUnitControls();
+    }
+
+    private void LayoutUnitControls()
+    {
+        int left = Scale(68);
+        int width = Math.Max(120, Width - left - Scale(18));
+        _units.SetBounds(left, Scale(4), width, Scale(28));
     }
 
     public event Action<IReadOnlyList<double>>? CurveChanged;
@@ -124,6 +147,13 @@ internal sealed class EotfCurveEditor : Control
     protected override void OnMouseDown(MouseEventArgs eventArgs)
     {
         base.OnMouseDown(eventArgs);
+        if (Enabled && eventArgs.Button == MouseButtons.Right && _referencePeakNits > 0)
+        {
+            int pointIndex = HitTestControlPoint(eventArgs.Location);
+            if (pointIndex > 0 && pointIndex < _values.Length - 1)
+                EditPointValue(pointIndex);
+            return;
+        }
         if (!Enabled || eventArgs.Button != MouseButtons.Left || _referencePeakNits <= 0)
             return;
 
@@ -234,7 +264,7 @@ internal sealed class EotfCurveEditor : Control
             float amount = step / 4f;
             float y = plot.Bottom - plot.Height * amount;
             graphics.DrawLine(gridPen, plot.Left, y, plot.Right, y);
-            string label = FormatNits(_referencePeakNits * amount);
+            string label = IsNormalized ? amount.ToString("0.##") : FormatNits(_referencePeakNits * amount);
             graphics.DrawString(label, Font, textBrush, new RectangleF(0, y - 10, plot.Left - Scale(8), 20), rightAligned);
         }
 
@@ -333,7 +363,10 @@ internal sealed class EotfCurveEditor : Control
             return;
 
         PointF point = GetControlPoint(plot, index);
-        string text = $"PQ {index * 10}%   {FormatNits(_values[index])} nits";
+        string value = IsNormalized
+            ? $"{EotfEditorUnits.ToDisplay(_values[index], true):0.######} ({FormatNits(_values[index])} nits)"
+            : $"{FormatNits(_values[index])} nits";
+        string text = $"PQ {index * 10}%   {value}";
         SizeF measured = graphics.MeasureString(text, Font);
         float width = measured.Width + Scale(18);
         float height = measured.Height + Scale(10);
@@ -435,7 +468,102 @@ internal sealed class EotfCurveEditor : Control
         double lower = _values[_dragIndex - 1];
         double nextPq = (_dragIndex + 1) / (double)(_values.Length - 1);
         double upper = nextPq >= _clipPq ? _referencePeakNits : _values[_dragIndex + 1];
-        _values[_dragIndex] = Math.Clamp(amount * _referencePeakNits, lower, upper);
+        _values[_dragIndex] = Math.Clamp(
+            EotfEditorUnits.ToNits(IsNormalized ? amount : amount * _referencePeakNits, IsNormalized),
+            lower,
+            upper);
+        _hasCustomCurve = true;
+        _usesStandardPq = false;
+        CurveChanged?.Invoke(_values.ToArray());
+        Invalidate();
+    }
+
+    private void EditPointValue(int index)
+    {
+        double lower = _values[index - 1];
+        double nextPq = (index + 1) / (double)(_values.Length - 1);
+        double upper = nextPq >= _clipPq ? _referencePeakNits : _values[index + 1];
+
+        using Form dialog = new()
+        {
+            Text = Localization.T("EotfEditPoint"),
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            ShowInTaskbar = false,
+            BackColor = HextaTheme.Surface,
+            ClientSize = new Size(400, 154),
+            Font = HextaTheme.CreateSmallFont()
+        };
+        dialog.HandleCreated += (_, _) => NativeMethods.ApplyImmersiveDarkMode(dialog.Handle, HextaTheme.IsDark);
+
+        string unitLabel = Localization.T(IsNormalized ? "EotfNormalizedUnits" : "EotfAbsoluteUnits");
+        Label label = new()
+        {
+            Text = $"PQ {index * 10}%   {unitLabel}",
+            ForeColor = HextaTheme.TextSecondary,
+            AutoSize = false,
+            Location = new Point(20, 16),
+            Size = new Size(360, 28)
+        };
+        decimal minVal = (decimal)EotfEditorUnits.ToDisplay(lower, IsNormalized);
+        decimal maxVal = Math.Max(minVal, (decimal)EotfEditorUnits.ToDisplay(upper, IsNormalized));
+        decimal curVal = Math.Clamp(
+            (decimal)EotfEditorUnits.ToDisplay(Math.Clamp(_values[index], lower, upper), IsNormalized),
+            minVal,
+            maxVal);
+        NumericUpDown input = new()
+        {
+            DecimalPlaces = IsNormalized ? 6 : 3,
+            Increment = IsNormalized ? 0.001m : 1m,
+            Minimum = minVal,
+            Maximum = maxVal,
+            Value = curVal,
+            BackColor = HextaTheme.MutedSurface,
+            ForeColor = HextaTheme.TextPrimary,
+            BorderStyle = BorderStyle.FixedSingle,
+            Location = new Point(20, 50),
+            Width = 360
+        };
+        HextaButton save = new()
+        {
+            Text = Localization.T("AblSave"),
+            Variant = HextaButtonVariant.Primary,
+            DialogResult = DialogResult.OK,
+            Location = new Point(196, 102),
+            Size = new Size(88, 34)
+        };
+        HextaButton cancel = new()
+        {
+            Text = Localization.T("AblCancel"),
+            Variant = HextaButtonVariant.Secondary,
+            DialogResult = DialogResult.Cancel,
+            Location = new Point(292, 102),
+            Size = new Size(88, 34)
+        };
+        dialog.Controls.AddRange([label, input, save, cancel]);
+        dialog.AutoScaleDimensions = new SizeF(HextaTheme.BaselineDpi, HextaTheme.BaselineDpi);
+        dialog.AutoScaleMode = AutoScaleMode.Dpi;
+        dialog.Shown += (_, _) => { input.Focus(); input.Select(0, input.Text.Length); };
+        dialog.KeyPreview = true;
+        dialog.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                dialog.DialogResult = DialogResult.OK;
+                dialog.Close();
+            }
+            else if (e.KeyCode == Keys.Escape)
+            {
+                dialog.DialogResult = DialogResult.Cancel;
+                dialog.Close();
+            }
+        };
+        if (dialog.ShowDialog(FindForm()) != DialogResult.OK)
+            return;
+
+        _values[index] = Math.Clamp(EotfEditorUnits.ToNits((double)input.Value, IsNormalized), lower, upper);
         _hasCustomCurve = true;
         _usesStandardPq = false;
         CurveChanged?.Invoke(_values.ToArray());
@@ -505,7 +633,7 @@ internal sealed class EotfCurveEditor : Control
     private RectangleF GetPlotBounds()
     {
         float left = Scale(68);
-        float top = Scale(18);
+        float top = Scale(44);
         float right = Scale(18);
         float bottom = Scale(42);
         return new RectangleF(
@@ -529,7 +657,10 @@ internal sealed class EotfCurveEditor : Control
     private PointF ToPlotPoint(RectangleF plot, double pq, double outputNits)
     {
         float x = plot.Left + (float)Math.Clamp(pq, 0, 1) * plot.Width;
-        float y = plot.Bottom - (float)Math.Clamp(outputNits / _referencePeakNits, 0, 1) * plot.Height;
+        double vertical = IsNormalized
+            ? EotfEditorUnits.ToDisplay(outputNits, true)
+            : outputNits / _referencePeakNits;
+        float y = plot.Bottom - (float)Math.Clamp(vertical, 0, 1) * plot.Height;
         return new PointF(x, y);
     }
 

@@ -148,6 +148,8 @@ When “Show ABL estimated luminance” is enabled, source signal luminance is f
 
 Profiles can be created, duplicated, renamed, deleted, and saved. The active profile and ABL estimation can be changed while a session is running without stopping it. All output displays use the same active profile.
 
+In the EOTF editor, besides the peak reference curve, you can select **APL 1%, 10%, or 25%** and enable custom final-output EOTF curves for OLED panels whose roll-off shape changes with window size; legacy scaling remains unchanged when no per-APL curve is enabled. The editor supports linked **Absolute (nits)** and **Normalized (PQ 0–1)** views, and right-clicking any editable control point opens a numeric input dialog.
+
 ### Luminance false color scale
 
 | Luminance range | Continuous color transition |
@@ -215,6 +217,17 @@ Analysis overlays automatically recover their window level over applications tha
 4. HDR single display analysis overlays cannot cover exclusive fullscreen applications or applications that use an independent presentation path.
 
 ## Changelog
+
+### 2.1.0
+
+Thanks to [@7Nobody7](https://github.com/7Nobody7) for the contribution in [#2](https://github.com/WhiteBr1ck/HDRScreenMirror/issues/2).
+
+1. Added per-APL custom final-output EOTF curves for 1%, 10%, and 25% APL, while keeping legacy profiles and scaling behavior backward-compatible.
+2. Added linked **Absolute (nits)** and **Normalized (PQ 0–1)** views plus right-click numeric point editing in the EOTF curve editor, and made the ABL profile manager resizable.
+3. Fixed 64-entry EOTF LUT interpolation in `Luminance.hlsl` to interpolate on the input-nits axis rather than the PQ-code axis, preventing upward lift on standard PQ curves.
+4. Added log-log power-law peak interpolation at ≥25% APL and a 100% full-screen average luminance budget.
+5. Replaced multi-field volatile ABL state updates in `MirrorSession` with an atomic immutable `AblState` snapshot, and updated the status overlay to display effective area and window peak when per-APL curves are active.
+6. Added the `tests/AblRegression` regression test suite (including D3D11 WARP compute shader checks).
 
 ### 2.0.0
 

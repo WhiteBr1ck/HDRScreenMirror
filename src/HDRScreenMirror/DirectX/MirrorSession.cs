@@ -43,10 +43,10 @@ internal sealed class MirrorSession : IDisposable
     private readonly bool _renderCursor;
     private int _falseColorMode;
     private int _gamutAnalysisEnabled;
-    private AblProfile? _ablProfile;
-    private float[] _ablEotfLut = CreateDefaultEotfLut();
-    private int _ablProfileVersion;
-    private int _lastAnalyzedAblProfileVersion;
+    private sealed record AblState(AblProfile? Profile, float[] Lut);
+    private AblState _ablState = new(null, CreateDefaultEotfLut());
+    private AblState? _lastAnalyzedAblState;
+    private float[]? _lastOutputEotfLut;
     private readonly bool _analyzeLuminance;
     private readonly CancellationTokenSource _cancellation = new();
     private readonly TaskCompletionSource _initialized = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -186,9 +186,8 @@ internal sealed class MirrorSession : IDisposable
     public void SetAblProfile(AblProfile? profile)
     {
         AblProfile? clone = profile?.Clone();
-        Volatile.Write(ref _ablProfile, clone);
-        Volatile.Write(ref _ablEotfLut, clone?.BuildEotfLut() ?? CreateDefaultEotfLut());
-        Interlocked.Increment(ref _ablProfileVersion);
+        clone?.Normalize();
+        Volatile.Write(ref _ablState, new AblState(clone, clone?.BuildEotfLut() ?? CreateDefaultEotfLut()));
     }
 
     public async Task<IReadOnlyList<HdrScreenshotFrame>> CaptureOutputFramesAsync(
@@ -506,7 +505,7 @@ internal sealed class MirrorSession : IDisposable
                     bool refreshFrameLuminance =
                         !_hasFrameLuminance ||
                         frameLuminanceClock.Elapsed >= frameInterval ||
-                        _lastAnalyzedAblProfileVersion != Volatile.Read(ref _ablProfileVersion);
+                        !ReferenceEquals(_lastAnalyzedAblState, Volatile.Read(ref _ablState));
                     LuminanceTelemetry? luminance = AnalyzeLuminance(refreshFrameLuminance);
                     if (luminance is not null)
                         LuminanceChanged?.Invoke(luminance);
@@ -1048,10 +1047,12 @@ internal sealed class MirrorSession : IDisposable
         _context.PSSetShaderResource(1, null!);
     }
 
-    private unsafe MirrorConstants CreateMirrorConstants(float? ablReferencePeakNits = null)
+    private unsafe MirrorConstants CreateMirrorConstants(AblState? state = null, float[]? outputLut = null)
     {
-        float referencePeak = ablReferencePeakNits ??
-            (float)(Volatile.Read(ref _ablProfile)?.ReferencePeakNits ?? 10000);
+        state ??= Volatile.Read(ref _ablState);
+        float referencePeak = outputLut is null
+            ? (float)(state.Profile?.ReferencePeakNits ?? 10000)
+            : outputLut[^1];
         referencePeak = Math.Clamp(referencePeak, 0.001f, 10000f);
         MirrorConstants constants = new()
         {
@@ -1064,13 +1065,13 @@ internal sealed class MirrorSession : IDisposable
             PointerX = _probePointerX,
             PointerY = _probePointerY,
             AblReferencePeakNits = referencePeak,
-            AblCustomEotfEnabled = Volatile.Read(ref _ablProfile)?.UsesStandardPq == false ? 1u : 0u,
+            AblCustomEotfEnabled = outputLut is not null || state.Profile?.UsesStandardPq == false ? 1u : 0u,
             AblClipPq = (float)Math.Clamp(
-                (Volatile.Read(ref _ablProfile)?.EffectiveEotfClipPqPercent ?? 100) / 100.0,
+                outputLut is not null ? 1 : (state.Profile?.EffectiveEotfClipPqPercent ?? 100) / 100.0,
                 0.01,
                 1)
         };
-        float[] lut = Volatile.Read(ref _ablEotfLut);
+        float[] lut = outputLut ?? state.Lut;
         for (int index = 0; index < AblProfile.EotfLutSize; index++)
             constants.AblEotfLut[index] = lut[index];
         return constants;
@@ -1240,10 +1241,10 @@ internal sealed class MirrorSession : IDisposable
             return null;
 
         UpdateProbePointerPosition();
-        AblProfile? ablProfile = Volatile.Read(ref _ablProfile);
-        int ablProfileVersion = Volatile.Read(ref _ablProfileVersion);
-        float ablReferencePeakNits = (float)(ablProfile?.ReferencePeakNits ?? 10000);
-        _context!.UpdateSubresource(CreateMirrorConstants(ablReferencePeakNits), _constantBuffer);
+        AblState state = Volatile.Read(ref _ablState);
+        AblProfile? ablProfile = state.Profile;
+        refreshFrameLuminance |= !ReferenceEquals(state, _lastAnalyzedAblState);
+        _context!.UpdateSubresource(CreateMirrorConstants(state), _constantBuffer);
         _context.CSSetConstantBuffer(0, _constantBuffer);
         _context.CSSetShaderResource(0, _frameView);
 
@@ -1256,22 +1257,10 @@ internal sealed class MirrorSession : IDisposable
             _context.CopyResource(_frameStatsReadback, _frameStatsBuffer);
         }
 
-        bool pointerInCaptureArea = IsPointerInCaptureArea();
-        if (pointerInCaptureArea)
-        {
-            _context.CSSetShader(_pointerProbeComputeShader);
-            _context.CSSetUnorderedAccessView(0, _pointerStatsView);
-            _context.Dispatch(1, 1, 1);
-            _context.CSSetUnorderedAccessView(0, null!);
-            _context.CopyResource(_pointerStatsReadback, _pointerStatsBuffer);
-        }
-
-        _context.CSSetShaderResource(0, null!);
-        _context.CSSetShader(null!);
-
         if (refreshFrameLuminance)
         {
             double sum = 0;
+            double squaredSum = 0;
             double minimum = double.PositiveInfinity;
             double maximum = 0;
             double clippedSum = 0;
@@ -1298,6 +1287,7 @@ internal sealed class MirrorSession : IDisposable
                             continue;
 
                         sum += result.Sum;
+                        squaredSum += result.SquaredSum;
                         if (result.Minimum < minimum)
                         {
                             minimum = result.Minimum;
@@ -1365,7 +1355,11 @@ internal sealed class MirrorSession : IDisposable
             }
 
             if (count == 0)
+            {
+                _context.CSSetShaderResource(0, null!);
+                _context.CSSetShader(null!);
                 return null;
+            }
 
             _lastFrameAverageNits = sum / count;
             _lastFrameMaximumNits = maximum;
@@ -1379,10 +1373,47 @@ internal sealed class MirrorSession : IDisposable
                 ablProfile,
                 clippedAverage,
                 clippedMaximum,
-                double.IsPositiveInfinity(clippedMinimum) ? 0 : clippedMinimum);
-            _lastAnalyzedAblProfileVersion = ablProfileVersion;
+                double.IsPositiveInfinity(clippedMinimum) ? 0 : clippedMinimum,
+                AblEstimator.CalculateEffectiveArea(sum, squaredSum, count));
+            _lastOutputEotfLut = null;
+            if (ablProfile?.HasAplEotfCurves == true && _lastAblEstimate is { } estimate)
+            {
+                _lastOutputEotfLut = ablProfile.BuildOutputEotfLut(estimate.EffectiveAreaPercent ?? estimate.EquivalentAplPercent);
+                _context.UpdateSubresource(CreateMirrorConstants(state, _lastOutputEotfLut), _constantBuffer);
+                _context.CSSetShader(_luminanceComputeShader);
+                _context.CSSetUnorderedAccessView(0, _frameStatsView);
+                _context.Dispatch((_frameWidth + 15) / 16, (_frameHeight + 15) / 16, 1);
+                _context.CSSetUnorderedAccessView(0, null!);
+                _context.CopyResource(_frameStatsReadback, _frameStatsBuffer);
+                (double Average, double Maximum, double Minimum) output = ReadOutputLuminance();
+                _lastAblEstimate = AblEstimator.ApplyAverageLimit(ablProfile, estimate with
+                {
+                    AverageNits = output.Average,
+                    MaximumNits = output.Maximum,
+                    MinimumNits = output.Minimum,
+                    AplPeakNits = _lastOutputEotfLut[^1],
+                    ScaleFactor = clippedAverage > 0 ? output.Average / clippedAverage : 1,
+                    UsesAplEotf = true,
+                    AverageLimitScale = 1
+                });
+            }
+            _lastAnalyzedAblState = state;
             _hasFrameLuminance = true;
         }
+
+        _context.UpdateSubresource(CreateMirrorConstants(state, _lastOutputEotfLut), _constantBuffer);
+        bool pointerInCaptureArea = IsPointerInCaptureArea();
+        if (pointerInCaptureArea)
+        {
+            _context.CSSetShader(_pointerProbeComputeShader);
+            _context.CSSetUnorderedAccessView(0, _pointerStatsView);
+            _context.Dispatch(1, 1, 1);
+            _context.CSSetUnorderedAccessView(0, null!);
+            _context.CopyResource(_pointerStatsReadback, _pointerStatsBuffer);
+        }
+
+        _context.CSSetShaderResource(0, null!);
+        _context.CSSetShader(null!);
 
         double pointerRegionNits = 0;
         double? pointerScaledNits = null;
@@ -1403,7 +1434,9 @@ internal sealed class MirrorSession : IDisposable
                         if (_lastAblEstimate is AblLuminanceEstimate estimate)
                         {
                             double clippedPointerNits = result.ClippedSum / result.Count;
-                            pointerScaledNits = clippedPointerNits * estimate.ScaleFactor;
+                            pointerScaledNits = estimate.UsesAplEotf
+                                ? clippedPointerNits * estimate.AverageLimitScale
+                                : clippedPointerNits * estimate.ScaleFactor;
                         }
                     }
                     else
@@ -1431,6 +1464,34 @@ internal sealed class MirrorSession : IDisposable
             pointerRegionNits,
             pointerScaledNits,
             _lastAblEstimate);
+    }
+
+    private unsafe (double Average, double Maximum, double Minimum) ReadOutputLuminance()
+    {
+        MappedSubresource map = _context!.Map(_frameStatsReadback!, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+        try
+        {
+            double sum = 0;
+            double maximum = 0;
+            double minimum = double.PositiveInfinity;
+            ulong count = 0;
+            LuminanceGroupResult* results = (LuminanceGroupResult*)map.DataPointer;
+            for (int i = 0; i < _frameStatsCount; i++)
+            {
+                LuminanceGroupResult result = results[i];
+                if (result.Count == 0)
+                    continue;
+                sum += result.ClippedSum;
+                count += result.Count;
+                maximum = Math.Max(maximum, result.ClippedMaximum);
+                minimum = Math.Min(minimum, result.ClippedMinimum);
+            }
+            return count == 0 ? (0, 0, 0) : (sum / count, maximum, minimum);
+        }
+        finally
+        {
+            _context.Unmap(_frameStatsReadback!, 0);
+        }
     }
 
     private void UpdateProbePointerPosition()
@@ -1580,7 +1641,7 @@ internal sealed class MirrorSession : IDisposable
         float ClippedSum,
         float ClippedMinimum,
         float ClippedMaximum,
-        uint ClippedPadding);
+        float SquaredSum);
 
     [StructLayout(LayoutKind.Sequential)]
     private readonly record struct CursorConstants(

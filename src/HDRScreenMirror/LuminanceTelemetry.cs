@@ -21,4 +21,7 @@ internal sealed record AblLuminanceEstimate(
     double ScaleFactor,
     double AverageNits,
     double MaximumNits,
-    double MinimumNits);
+    double MinimumNits,
+    bool UsesAplEotf = false,
+    double AverageLimitScale = 1,
+    double? EffectiveAreaPercent = null);

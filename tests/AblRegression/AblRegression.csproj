@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/HDRScreenMirror/AblProfile.cs" Link="AblProfile.cs" />
+    <Compile Include="../../src/HDRScreenMirror/LuminanceTelemetry.cs" Link="LuminanceTelemetry.cs" />
+    <Compile Include="../../src/HDRScreenMirror/EotfEditorUnits.cs" Link="EotfEditorUnits.cs" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <Content Include="../../src/HDRScreenMirror/Shaders/LuminanceCS.cso" Link="LuminanceCS.cso" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../src/HDRScreenMirror/Shaders/PointerProbeCS.cso" Link="PointerProbeCS.cso" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

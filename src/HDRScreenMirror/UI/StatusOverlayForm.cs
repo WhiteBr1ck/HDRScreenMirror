@@ -472,12 +472,21 @@ internal sealed class StatusOverlayForm : Form
         float subY = y + 88;
         float colWidth = ContentWidth / 3f;
         double aplPercent = estimate?.EquivalentAplPercent ?? 0;
-        double scalePercent = (estimate?.ScaleFactor ?? 0) * 100.0;
-        double reductionPercent = Math.Max(0, 100.0 - scalePercent);
-
-        DrawInlineStat(graphics, OuterPadding, subY, Localization.T("OverlayAblAplLabel"), $"{aplPercent:F1}%", accentBrush, mutedBrush, typographic);
-        DrawInlineStat(graphics, OuterPadding + colWidth, subY, Localization.T("OverlayAblScaleLabel"), $"{scalePercent:F1}%", secondaryBrush, mutedBrush, typographic);
-        DrawInlineStat(graphics, OuterPadding + colWidth * 2f, subY, Localization.T("OverlayAblReductionLabel"), $"{reductionPercent:F1}%", secondaryBrush, mutedBrush, typographic);
+        if (estimate?.UsesAplEotf == true)
+        {
+            double areaPercent = estimate.EffectiveAreaPercent ?? aplPercent;
+            DrawInlineStat(graphics, OuterPadding, subY, Localization.T("OverlayAblAplLabel"), $"{aplPercent:F1}%", accentBrush, mutedBrush, typographic);
+            DrawInlineStat(graphics, OuterPadding + colWidth, subY, Localization.T("OverlayAblAreaLabel"), $"{areaPercent:F1}%", secondaryBrush, mutedBrush, typographic);
+            DrawInlineStat(graphics, OuterPadding + colWidth * 2f, subY, Localization.T("OverlayAblWindowPeakLabel"), $"{estimate.AplPeakNits:F0}", secondaryBrush, mutedBrush, typographic);
+        }
+        else
+        {
+            double scalePercent = (estimate?.ScaleFactor ?? 0) * 100.0;
+            double reductionPercent = Math.Max(0, 100.0 - scalePercent);
+            DrawInlineStat(graphics, OuterPadding, subY, Localization.T("OverlayAblAplLabel"), $"{aplPercent:F1}%", accentBrush, mutedBrush, typographic);
+            DrawInlineStat(graphics, OuterPadding + colWidth, subY, Localization.T("OverlayAblScaleLabel"), $"{scalePercent:F1}%", secondaryBrush, mutedBrush, typographic);
+            DrawInlineStat(graphics, OuterPadding + colWidth * 2f, subY, Localization.T("OverlayAblReductionLabel"), $"{reductionPercent:F1}%", secondaryBrush, mutedBrush, typographic);
+        }
 
         return y + 120;
     }
